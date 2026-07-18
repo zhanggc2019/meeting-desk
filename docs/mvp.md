@@ -6,20 +6,20 @@
 
 ## 1. MVP 目标
 
-为企业内部 Windows 用户提供一个小巧的桌面工具：选择一个或批量选择已有的离线音频文件，经可配置的云端 ASR 获得完整转写，再由可配置的大模型生成结构化会议纪要，最后在本地保存、搜索、复制并导出 Markdown。
+为企业内部 Windows 用户提供一个小巧的桌面工具：选择一个或批量选择已有的离线音频/视频文件，经可配置的云端 ASR 获得完整转写，再由可配置的大模型生成结构化会议纪要，最后在本地保存、搜索、复制、预览并导出 Markdown。
 
 ```text
-选择 WAV / MP3 / M4A
+选择 WAV / MP3 / M4A / MP4 / MOV
   -> 校验 / staging / hash / capability preflight
   -> 上传 / 转写 / 总结
   -> 本地保存 / 详情展示 / 搜索 / 复制 / Markdown 导出
 ```
 
-支持的入口格式是 WAV、MP3、M4A；某个文件能否提交取决于所选 ASR Provider 的真实 capabilities。MVP 不默认转码，不捆绑或调用 FFmpeg。
+支持的入口格式是 WAV、MP3、M4A、MP4、MOV；视频必须包含 AAC 或 ALAC 音轨。某个文件能否提交取决于所选 ASR Provider 的真实 capabilities。MVP 不默认转码，不捆绑或调用 FFmpeg。
 
 ## 2. 目标用户与核心场景
 
-- 企业内部员工整理已有的会议、访谈、培训或项目沟通音频文件。
+- 企业内部员工整理已有的会议、访谈、培训或项目沟通音频/视频文件。
 - 用户自行提供 ASR 与大模型配置，应用不绑定单一供应商。
 - 用户希望批量处理多个文件，并能查看每个任务的独立状态、失败原因、取消和重试结果。
 - 用户希望文件、转写和纪要只存在于本机及其主动配置的云端处理链路中。
@@ -29,13 +29,20 @@
 ### 3.1 文件导入
 
 - 使用 Windows 文件选择器选择一个或多个已有文件。
-- 入口筛选 WAV、MP3、M4A，同时在 Rust core 重新检查普通文件状态、非空、文件头/容器、大小和已知媒体元数据。
+- 入口筛选 WAV、MP3、M4A、MP4、MOV，同时在 Rust core 重新检查普通文件状态、非空、文件头/容器、音轨、大小和已知媒体元数据。
 - 将通过本地校验的文件流式复制到 app-local-data staging，不修改、移动或删除用户原文件。
 - staging 过程中计算 SHA-256，并检查源文件是否在复制期间变化。
 - 根据 `TranscriptionProvider.capabilities()` 对扩展名、媒体类型、容器、编码、大小和时长做 preflight。
 - capabilities 未声明的限制保持 `unknown`，不凭空假设；明确不兼容时在上传前失败。
 - 单个文件失败不影响同一批次中的其他文件。
 - 不默认转码、压缩或切片，不依赖外部媒体程序。
+
+### 3.1.1 软件更新
+
+- 应用启动后静默检查本仓库 GitHub Release 更新；无更新或暂时断网时不打断转写工作。
+- 有更新时显示版本、下载进度、稍后处理和立即更新操作；安装前由用户确认。
+- 只接受与内置公钥匹配的 Tauri 签名更新包，发布私钥不得进入源码仓库或普通 CI。
+- `main` 分支自动执行 Windows 测试和打包；版本标签自动创建包含 NSIS、`.sig` 与 `latest.json` 的 Release。
 
 ### 3.2 云端处理
 
@@ -93,7 +100,7 @@
 
 ### 5.1 首次启动与配置
 
-1. 无 Key 时应用仍可启动，设置、历史空状态和 mock 模式可访问。
+1. 无 Key 时应用仍可启动，设置和历史空状态可访问，但音频选择保持禁用并提供配置引导。
 2. 用户分别配置 ASR/纪要 Provider 的 endpoint、model、超时、重试和 Key。
 3. 后端保存 Key，UI 之后只显示“已配置”。
 4. 用户可运行连接测试；失败只展示安全错误。
@@ -159,7 +166,7 @@ uploading / transcribing / summarizing
 
 ### 7.1 启动与配置
 
-- **AC-BOOT-01**：无 Key 时应用可启动，mock 模式、历史空状态和设置页可访问。
+- **AC-BOOT-01**：无 Key 时应用可启动，历史空状态和设置页可访问，音频入口明确禁用。
 - **AC-CONFIG-01**：endpoint、model、timeout、retry 和并发均可配置，仓库无真实秘密值或内部地址。
 - **AC-SECRET-01**：保存 Key 后重启仍显示“已配置”，但 UI、SQLite、普通日志和 IPC 响应不能读出值。
 - **AC-PACKAGE-01**：Windows 开发启动、release build 和至少一种 NSIS/MSI 构建实际成功，记录真实产物大小。
@@ -168,7 +175,7 @@ uploading / transcribing / summarizing
 
 - **AC-IMPORT-01**：使用仓库现有 MP3 的相对路径完成自动导入验证；其正文和原始文件名不进入日志或快照。
 - **AC-IMPORT-02**：单选和批量选择均能创建独立 artifact；批次含有效与无效文件时，有效项仍可处理。
-- **AC-IMPORT-03**：WAV、MP3、M4A fixtures 覆盖合法容器、空文件、后缀伪装、损坏头和不支持编码。
+- **AC-IMPORT-03**：WAV、MP3、M4A、MP4、MOV fixtures 覆盖合法容器、空文件、后缀伪装、损坏头、不支持编码和无音轨视频。
 - **AC-IMPORT-04**：staging 与 SHA-256 使用分块 I/O；大文件测试不会按文件大小等量增长进程内存。
 - **AC-IMPORT-05**：复制期间源文件变化返回 `source_file_changed`；不生成可提交 artifact。
 - **AC-IMPORT-06**：删除会议只删除受管副本，不修改或删除用户原文件。
@@ -176,7 +183,7 @@ uploading / transcribing / summarizing
 
 ### 7.3 Capability preflight 与 Mock 闭环
 
-- **AC-CAP-01**：mock capabilities 可分别接受/拒绝 WAV、MP3、M4A，并覆盖大小、时长、容器和编码限制。
+- **AC-CAP-01**：Provider capabilities 可分别接受/拒绝 WAV、MP3、M4A、MP4、MOV，并覆盖大小、时长、容器和编码限制。
 - **AC-CAP-02**：明确不兼容的文件在上传前失败；未知限制不被伪装成支持或不支持。
 - **AC-E2E-01**：至少一个真实音频文件通过 mock 跑通 `导入 -> 转写 -> 纪要 -> SQLite -> 详情 -> Markdown`。
 - **AC-E2E-02**：mock 可确定性模拟 timeout、401、429、500、malformed response、empty transcript 和批量部分失败。

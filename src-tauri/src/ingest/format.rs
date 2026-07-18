@@ -9,13 +9,15 @@ use super::error::IngestError;
 const MP3_SCAN_BYTES: u64 = 256 * 1024;
 const MAX_ISO_BOXES_PER_LEVEL: usize = 16_384;
 
-/// 导入模块支持的音频容器类型。
+/// 导入模块支持的音频或视频容器类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioFormat {
     Wav,
     Mp3,
     M4a,
+    Mp4,
+    Mov,
 }
 
 impl AudioFormat {
@@ -25,6 +27,8 @@ impl AudioFormat {
             Self::Wav => "wav",
             Self::Mp3 => "mp3",
             Self::M4a => "m4a",
+            Self::Mp4 => "mp4",
+            Self::Mov => "mov",
         }
     }
 
@@ -34,8 +38,27 @@ impl AudioFormat {
             Self::Wav => "audio/wav",
             Self::Mp3 => "audio/mpeg",
             Self::M4a => "audio/mp4",
+            Self::Mp4 => "video/mp4",
+            Self::Mov => "video/quicktime",
         }
     }
+
+    /// 返回文件内容预期使用的底层容器族。
+    fn container(self) -> DetectedContainer {
+        match self {
+            Self::Wav => DetectedContainer::Wav,
+            Self::Mp3 => DetectedContainer::Mp3,
+            Self::M4a | Self::Mp4 | Self::Mov => DetectedContainer::IsoBmff,
+        }
+    }
+}
+
+/// 文件头可可靠区分的底层容器族。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetectedContainer {
+    Wav,
+    Mp3,
+    IsoBmff,
 }
 
 /// 经过结构校验后得到的非敏感音频技术元数据。
@@ -53,9 +76,15 @@ struct IsoBox {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct M4aTrack {
+struct IsoAudioTrack {
     duration_ms: Option<u64>,
     supported_codec: bool,
+}
+
+/// ISO BMFF 中和转写相关的媒体轨类型。
+enum IsoMediaTrack {
+    Audio(IsoAudioTrack),
+    Video,
 }
 
 /// 根据大小写不敏感的扩展名确定用户声明的容器类型。
@@ -70,6 +99,8 @@ pub fn expected_format(path: &Path) -> Result<AudioFormat, IngestError> {
         "wav" => Ok(AudioFormat::Wav),
         "mp3" => Ok(AudioFormat::Mp3),
         "m4a" => Ok(AudioFormat::M4a),
+        "mp4" => Ok(AudioFormat::Mp4),
+        "mov" => Ok(AudioFormat::Mov),
         _ => Err(IngestError::UnsupportedExtension),
     }
 }
@@ -86,27 +117,27 @@ pub fn inspect_audio(path: &Path, expected: AudioFormat) -> Result<AudioInspecti
     }
 
     let actual = detect_format(&mut file, byte_length)?;
-    if actual != expected {
+    if actual != expected.container() {
         return Err(IngestError::ExtensionContentMismatch);
     }
 
     let duration_ms = match actual {
-        AudioFormat::Wav => validate_wav(&mut file, byte_length)?,
-        AudioFormat::Mp3 => {
+        DetectedContainer::Wav => validate_wav(&mut file, byte_length)?,
+        DetectedContainer::Mp3 => {
             validate_mp3(&mut file, byte_length)?;
             None
         }
-        AudioFormat::M4a => validate_m4a(&mut file, byte_length)?,
+        DetectedContainer::IsoBmff => validate_iso_bmff(&mut file, byte_length)?,
     };
 
     Ok(AudioInspection {
-        format: actual,
+        format: expected,
         duration_ms,
     })
 }
 
 /// 通过受限头部读取和结构探测识别真实容器类型。
-fn detect_format(file: &mut File, byte_length: u64) -> Result<AudioFormat, IngestError> {
+fn detect_format(file: &mut File, byte_length: u64) -> Result<DetectedContainer, IngestError> {
     let mut header = [0u8; 12];
     file.seek(SeekFrom::Start(0))
         .map_err(|_| IngestError::CorruptAudio)?;
@@ -115,13 +146,13 @@ fn detect_format(file: &mut File, byte_length: u64) -> Result<AudioFormat, Inges
         .map_err(|_| IngestError::CorruptAudio)?;
 
     if bytes_read >= 12 && &header[0..4] == b"RIFF" && &header[8..12] == b"WAVE" {
-        return Ok(AudioFormat::Wav);
+        return Ok(DetectedContainer::Wav);
     }
     if bytes_read >= 12 && &header[4..8] == b"ftyp" {
-        return Ok(AudioFormat::M4a);
+        return Ok(DetectedContainer::IsoBmff);
     }
     if find_mp3_frame(file, byte_length).is_ok() {
-        return Ok(AudioFormat::Mp3);
+        return Ok(DetectedContainer::Mp3);
     }
 
     Err(IngestError::CorruptAudio)
@@ -327,7 +358,7 @@ fn parse_mp3_frame_length(header: &[u8]) -> Option<usize> {
 }
 
 /// 校验 ISO BMFF 顶层 box、媒体数据及受支持音频轨。
-fn validate_m4a(file: &mut File, byte_length: u64) -> Result<Option<u64>, IngestError> {
+fn validate_iso_bmff(file: &mut File, byte_length: u64) -> Result<Option<u64>, IngestError> {
     let top_level = read_boxes(file, 0, byte_length)?;
     let ftyp = top_level
         .iter()
@@ -350,12 +381,15 @@ fn validate_m4a(file: &mut File, byte_length: u64) -> Result<Option<u64>, Ingest
     let moov_children = read_boxes(file, moov.payload_start, moov.end)?;
     let mut supported_tracks = Vec::new();
     let mut saw_unsupported_audio = false;
+    let mut saw_video = false;
     for trak in moov_children.iter().filter(|entry| &entry.kind == b"trak") {
-        if let Some(track) = parse_m4a_track(file, *trak)? {
-            if track.supported_codec {
-                supported_tracks.push(track);
-            } else {
-                saw_unsupported_audio = true;
+        if let Some(track) = parse_iso_media_track(file, *trak)? {
+            match track {
+                IsoMediaTrack::Audio(track) if track.supported_codec => {
+                    supported_tracks.push(track)
+                }
+                IsoMediaTrack::Audio(_) => saw_unsupported_audio = true,
+                IsoMediaTrack::Video => saw_video = true,
             }
         }
     }
@@ -369,11 +403,17 @@ fn validate_m4a(file: &mut File, byte_length: u64) -> Result<Option<u64>, Ingest
     if saw_unsupported_audio {
         return Err(IngestError::UnsupportedAudio);
     }
+    if saw_video {
+        return Err(IngestError::MissingAudioTrack);
+    }
     Err(IngestError::CorruptAudio)
 }
 
-/// 解析单个 trak，返回音频 handler、codec 与时长信息。
-fn parse_m4a_track(file: &mut File, trak: IsoBox) -> Result<Option<M4aTrack>, IngestError> {
+/// 解析单个 trak，返回音频或视频 handler 及必要元数据。
+fn parse_iso_media_track(
+    file: &mut File,
+    trak: IsoBox,
+) -> Result<Option<IsoMediaTrack>, IngestError> {
     let children = read_boxes(file, trak.payload_start, trak.end)?;
     for mdia in children.iter().filter(|entry| &entry.kind == b"mdia") {
         if let Some(track) = parse_mdia(file, *mdia)? {
@@ -384,9 +424,10 @@ fn parse_m4a_track(file: &mut File, trak: IsoBox) -> Result<Option<M4aTrack>, In
 }
 
 /// 解析 mdia 的 handler、mdhd 时长和 stsd sample entry。
-fn parse_mdia(file: &mut File, mdia: IsoBox) -> Result<Option<M4aTrack>, IngestError> {
+fn parse_mdia(file: &mut File, mdia: IsoBox) -> Result<Option<IsoMediaTrack>, IngestError> {
     let children = read_boxes(file, mdia.payload_start, mdia.end)?;
     let mut is_audio = false;
+    let mut is_video = false;
     let mut duration_ms = None;
     let mut supported_codec = None;
 
@@ -398,6 +439,7 @@ fn parse_mdia(file: &mut File, mdia: IsoBox) -> Result<Option<M4aTrack>, IngestE
             }
             read_exact_at(file, child.payload_start, &mut handler)?;
             is_audio = &handler[8..12] == b"soun";
+            is_video = &handler[8..12] == b"vide";
         } else if &child.kind == b"mdhd" {
             duration_ms = parse_mdhd_duration(file, child)?;
         } else if &child.kind == b"minf" {
@@ -406,10 +448,12 @@ fn parse_mdia(file: &mut File, mdia: IsoBox) -> Result<Option<M4aTrack>, IngestE
     }
 
     if is_audio {
-        Ok(Some(M4aTrack {
+        Ok(Some(IsoMediaTrack::Audio(IsoAudioTrack {
             duration_ms,
             supported_codec: supported_codec.unwrap_or(false),
-        }))
+        })))
+    } else if is_video {
+        Ok(Some(IsoMediaTrack::Video))
     } else {
         Ok(None)
     }

@@ -34,7 +34,7 @@ export const DESKTOP_COMMANDS = {
 export interface DesktopClient {
   /** 打开桌面文件对话框并返回经过后端校验的候选项。 */
   selectAudioFiles(mode: ImportMode): Promise<ImportCandidate[]>;
-  /** 为浏览器 Mock 测试注册文件元数据。 */
+  /** 为浏览器界面测试注册文件元数据。 */
   registerBrowserFiles(files: BrowserFileDescriptor[]): Promise<ImportCandidate[]>;
   /** 删除尚未提交的受管暂存副本。 */
   releaseAudioArtifact(artifactId: string): Promise<void>;

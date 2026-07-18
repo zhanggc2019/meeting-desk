@@ -122,7 +122,7 @@ pub enum ProviderReadiness {
     /// 配置不完整，不能调用真实 Provider。
     #[default]
     Incomplete,
-    /// 仅可运行内置 Mock 流程，不代表真实 Provider 已配置。
+    /// 兼容旧版持久化数据；新版正式界面不再提供 Mock 模式。
     MockExperience,
     /// 真实 Provider 的公开字段和秘密均已配置。
     Ready,
@@ -152,11 +152,11 @@ pub struct PublicProviderConfig {
 }
 
 impl Default for PublicProviderConfig {
-    /// 创建安全的 mock 默认配置，不包含任何真实 Provider 地址或秘密。
+    /// 创建安全的未配置默认值，不包含 Provider 地址或秘密。
     fn default() -> Self {
         Self {
-            preset_id: "mock".to_string(),
-            kind: "mock".to_string(),
+            preset_id: String::new(),
+            kind: String::new(),
             endpoint: String::new(),
             model: String::new(),
             credential_preset_id: None,
@@ -165,8 +165,8 @@ impl Default for PublicProviderConfig {
             request_timeout_ms: 60_000,
             max_retries: 2,
             ready: false,
-            readiness: ProviderReadiness::MockExperience,
-            validation_message: "当前为 Mock 体验模式，尚未配置真实服务".to_string(),
+            readiness: ProviderReadiness::Incomplete,
+            validation_message: "尚未配置服务".to_string(),
         }
     }
 }

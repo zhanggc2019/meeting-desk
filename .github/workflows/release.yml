@@ -1,0 +1,75 @@
+name: Publish signed Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify tag matches application version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match package version v$version"
+          }
+
+      - name: Run release checks
+        run: |
+          pnpm typecheck
+          pnpm test
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+          cargo test --manifest-path src-tauri/Cargo.toml --all-targets --all-features
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Build, sign and publish release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 听见纪要 v__VERSION__
+          releaseBody: |
+            - 新增 Windows 签名自动更新与 GitHub 自动打包。
+            - 新增带 AAC/ALAC 音轨的 MP4、MOV 视频导入与批量处理入口。
+            - 完善 Provider 配置引导、DeepSeek、阿里云百炼和第三方兼容预设。
+
+            当前真实 Fun-ASR 文件上传/轮询适配仍未完成验证，本版本不会把未验证请求伪装为成功。安装后，应用会在启动时静默检查后续版本。
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true

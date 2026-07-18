@@ -4,6 +4,7 @@ pub const PRESET_MOCK: &str = "mock";
 pub const PRESET_DASHSCOPE_FUNASR_CN: &str = "dashscope_funasr_cn";
 pub const PRESET_DASHSCOPE_FUNASR_INTL: &str = "dashscope_funasr_intl";
 pub const PRESET_DEEPSEEK: &str = "deepseek";
+pub const PRESET_ALIYUN_BAILIAN: &str = "aliyun_bailian";
 pub const PRESET_CUSTOM_OPENAI: &str = "custom_openai_compatible";
 
 pub const DASHSCOPE_FUNASR_CN_ENDPOINT: &str =
@@ -11,6 +12,8 @@ pub const DASHSCOPE_FUNASR_CN_ENDPOINT: &str =
 pub const DASHSCOPE_FUNASR_INTL_ENDPOINT: &str =
     "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription";
 pub const DEEPSEEK_ENDPOINT: &str = "https://api.deepseek.com/chat/completions";
+pub const ALIYUN_BAILIAN_ENDPOINT: &str =
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 
 /// 从进程环境读取非秘密 Provider 默认配置。
 pub fn provider_settings_from_environment() -> PublicSettings {
@@ -32,7 +35,7 @@ fn provider_from_environment(prefix: &str) -> PublicProviderConfig {
     let preset_id = std::env::var(format!("MEETING_DESK_{prefix}_PRESET_ID"))
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| infer_preset_from_fields(&kind, &endpoint, default_preset));
+        .unwrap_or_else(|| infer_preset_from_endpoint(&endpoint, default_preset));
     let secret_configured = environment_secret_exists(&format!("MEETING_DESK_{prefix}_API_KEY"));
     evaluate_provider_readiness(PublicProviderConfig {
         preset_id: preset_id.clone(),
@@ -60,15 +63,13 @@ fn provider_from_environment(prefix: &str) -> PublicProviderConfig {
     })
 }
 
-/// 根据可信环境字段推断预设；自定义地址会自动进入可编辑的 OpenAI-compatible 预设。
-fn infer_preset_from_fields(kind: &str, endpoint: &str, fallback: &str) -> String {
-    if kind == "mock" {
-        return PRESET_MOCK.to_string();
-    }
+/// 根据可信环境地址推断预设；自定义地址会自动进入可编辑的 OpenAI-compatible 预设。
+fn infer_preset_from_endpoint(endpoint: &str, fallback: &str) -> String {
     match endpoint.trim() {
         DASHSCOPE_FUNASR_CN_ENDPOINT => PRESET_DASHSCOPE_FUNASR_CN.to_string(),
         DASHSCOPE_FUNASR_INTL_ENDPOINT => PRESET_DASHSCOPE_FUNASR_INTL.to_string(),
         DEEPSEEK_ENDPOINT => PRESET_DEEPSEEK.to_string(),
+        ALIYUN_BAILIAN_ENDPOINT => PRESET_ALIYUN_BAILIAN.to_string(),
         "" => fallback.to_string(),
         _ => PRESET_CUSTOM_OPENAI.to_string(),
     }
@@ -89,21 +90,21 @@ fn provider_defaults(prefix: &str) -> (&'static str, &'static str, &'static str,
             DEEPSEEK_ENDPOINT,
             "deepseek-v4-flash",
         ),
-        _ => (PRESET_MOCK, "mock", "", ""),
+        _ => (PRESET_CUSTOM_OPENAI, "openai_compatible", "", ""),
     }
 }
 
 /// 根据旧配置的类型和精确托管地址推断稳定预设标识，未知地址归入自定义预设。
 pub fn infer_preset_id(provider: &PublicProviderConfig) -> String {
-    infer_preset_from_fields(&provider.kind, &provider.endpoint, PRESET_CUSTOM_OPENAI)
+    infer_preset_from_endpoint(&provider.endpoint, PRESET_CUSTOM_OPENAI)
 }
 
 /// 根据公开字段和秘密存在标记计算安全的 Provider 就绪状态。
 pub fn evaluate_provider_readiness(mut provider: PublicProviderConfig) -> PublicProviderConfig {
     if provider.kind == "mock" {
         provider.ready = false;
-        provider.readiness = ProviderReadiness::MockExperience;
-        provider.validation_message = "当前为 Mock 体验模式，尚未配置真实服务".to_string();
+        provider.readiness = ProviderReadiness::Incomplete;
+        provider.validation_message = "旧版演示配置已停用，请重新配置服务".to_string();
         return provider;
     }
 
@@ -229,13 +230,18 @@ mod tests {
         assert_eq!(evaluated.readiness, ProviderReadiness::Ready);
     }
 
-    /// 验证 Mock 只标识为体验模式，不能冒充真实配置就绪。
+    /// 验证旧版 Mock 配置已停用且不能冒充真实配置就绪。
     #[test]
-    fn marks_mock_as_experience_instead_of_real_ready() {
-        let evaluated = evaluate_provider_readiness(PublicProviderConfig::default());
+    fn rejects_legacy_mock_as_real_ready() {
+        let legacy = PublicProviderConfig {
+            preset_id: PRESET_MOCK.to_string(),
+            kind: "mock".to_string(),
+            ..PublicProviderConfig::default()
+        };
+        let evaluated = evaluate_provider_readiness(legacy);
         assert!(!evaluated.ready);
-        assert_eq!(evaluated.readiness, ProviderReadiness::MockExperience);
-        assert!(evaluated.validation_message.contains("Mock 体验模式"));
+        assert_eq!(evaluated.readiness, ProviderReadiness::Incomplete);
+        assert!(evaluated.validation_message.contains("已停用"));
     }
 
     /// 验证未配置环境覆盖时使用 FunASR 国内站和 DeepSeek 的托管默认值。
@@ -268,6 +274,15 @@ mod tests {
         value.kind = "dashscope_funasr".to_string();
         value.preset_id = PRESET_DASHSCOPE_FUNASR_CN.to_string();
         assert!(evaluate_provider_readiness(value).ready);
+    }
+
+    /// 验证百炼集中式 Chat Completions 地址能被精确识别为托管预设。
+    #[test]
+    fn infers_aliyun_bailian_managed_preset() {
+        assert_eq!(
+            infer_preset_from_endpoint(ALIYUN_BAILIAN_ENDPOINT, PRESET_CUSTOM_OPENAI),
+            PRESET_ALIYUN_BAILIAN
+        );
     }
 
     /// 验证只配置一类真实 Provider 时，另一类不会被误报为就绪。

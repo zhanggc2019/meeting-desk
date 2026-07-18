@@ -22,6 +22,8 @@ src-tauri/gen/
 !.env.example
 *.pem
 *.key
+*.key.pub
+*.sig
 *.p12
 *.pfx
 *.token
@@ -43,6 +45,11 @@ exports/
 *.mp3
 *.wav
 *.m4a
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
 *.aac
 *.flac
 *.ogg

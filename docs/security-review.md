@@ -2,12 +2,12 @@
 
 > 状态：Phase 2/5 实现复审，已完成代码静态审查、自动测试与 Windows NSIS 构建；尚未完成桌面端到端和安装实测
 > 日期：2026-07-17
-> 范围：Windows 11 x64、Tauri 2 桌面端、离线音频文件导入、SQLite、本地文件、云端 ASR/LLM Provider
+> 范围：Windows 11 x64、Tauri 2 桌面端、离线音视频文件导入、SQLite、本地文件、云端 ASR/LLM Provider、GitHub Release 自动更新
 > 关联文档：[技术架构](./architecture.md)、[MVP 定义](./mvp.md)、[API 契约](./api-contract.md)、[测试计划](./test-plan.md)
 
 ## 1. 结论
 
-当前实现已具备部分安全基础：Provider 抽象、redirect-disabled HTTP client、请求/响应上限、取消与重放安全策略、Windows Credential Manager、SQLite 参数化访问、WAV/MP3/M4A 预检、流式哈希、`.part` 精确清理、CSP 和最小插件 capability 均已落地。代码中未发现 `console`、`println`、`tracing` 等普通日志调用；会议文本由 React 文本节点渲染，没有 `dangerouslySetInnerHTML`。
+当前实现已具备部分安全基础：Provider 抽象、redirect-disabled HTTP client、请求/响应上限、取消与重放安全策略、Windows Credential Manager、SQLite 参数化访问、WAV/MP3/M4A/MP4/MOV 预检、流式哈希、`.part` 精确清理、CSP 和最小插件 capability 均已落地。MP4/MOV 必须包含一条受支持音轨，应用不会调用外部 FFmpeg。自动更新固定到本仓库 GitHub Release endpoint，并强制验证 Tauri updater 签名；发布私钥不在仓库中。代码中未发现 `console`、`println`、`tracing` 等普通日志调用；会议文本由 React 文本节点渲染，没有 `dangerouslySetInnerHTML`。
 
 当前**尚不能宣布安全或企业发布完成**。本轮已关闭命令缺失和 WebView 裸路径入口，并修复空 Key、URL、重复任务、取消后写库以及重启状态死锁；mock 音频到 SQLite 的 Rust 集成用例已经跑通。仍未完成真实 Tauri IPC/UI 端到端、Windows Credential Manager 实测、磁盘 SQLite 重启、锁定 staging 的 `cleanup_pending`、安装/启动/卸载和真实 Provider 验证。SQLite/WAL 仍明文保存会议数据，安装包也未签名。
 
@@ -18,14 +18,15 @@
 ### 2.1 已执行并确认
 
 - 重新读取 `AGENTS.md`，直接审查 `frontend/src/**`、`src-tauri/src/**`、`package.json`、`Cargo.toml`、`.env.example`、Tauri 配置和 capability，不依赖 Agent 总结。
-- `pnpm typecheck` 退出码 0；`pnpm test -- --run` 退出码 0，2 个文件、12 个前端测试通过，其中 Markdown 预览在 React StrictMode 下验证加载状态可终结。
-- `cargo test --manifest-path .\src-tauri\Cargo.toml --all-targets --all-features` 退出码 0，最终 74 个 Rust 测试通过；其中仓库本地真实 MP3 导入测试通过，但没有转写或记录其正文。
+- `pnpm typecheck` 退出码 0；`pnpm test` 退出码 0，3 个文件、19 个前端测试通过，其中自动更新和 Markdown 预览在 React StrictMode 下验证加载状态可终结。
+- `cargo test --manifest-path .\src-tauri\Cargo.toml --all-targets --all-features` 退出码 0，最终 96 个 Rust 测试通过；其中仓库本地真实 MP3 导入测试、MP4/MOV 结构与无音轨拒绝测试通过，但没有转写或记录其正文。
+- 仓库外生成的 1 秒 H.264 + AAC MP4 已通过 `ffprobe` 和定向真实 importer 测试；样例未提交，测试不读取语音正文。
 - `cargo fmt --check`、`cargo clippy ... -D warnings` 和 `pnpm build` 均退出码 0；Vite 主 JS 约 245 kB，gzip 约 76 kB。
 - `pnpm test:integration` 退出码 0，1 个 Rust 集成用例通过：合成 WAV 经真实 ingest、MockProvider、纪要校验、内存 SQLite 保存并清理 staging。该脚本不是 Tauri IPC/UI、磁盘 SQLite、重启或导出 E2E。
-- `pnpm tauri:build` 在配置引导、模板和 Markdown 预览集成后退出码 0，耗时约 68.9 秒；release exe 12,396,032 bytes，NSIS 安装器 3,272,849 bytes。
+- `pnpm tauri:build` 和 `pnpm tauri:build:release` 均退出码 0；后者生成 4,273,464-byte NSIS、424-byte updater `.sig`，release exe 启动检查通过。Updater 私钥只位于仓库外受控目录和 GitHub Actions Secret。
 - 扫描 144 个工作区文本文件，发现 2 个明确无效的测试 sentinel 文件，真实/高置信度供应商凭据命中 0；`.env.example` 的两个 Key 均为空；Git 跟踪音频文件数为 0。
-- 当前已初始化 `.git`，但提交数为 0，全部项目文件仍未跟踪；因此不能执行有意义的历史或 diff 审查。此前曾暴露的测试密钥仍无供应商侧轮换证据。
-- release 产物和 bundle 目录未发现 `.env*`、MP3/WAV/M4A、SQLite/DB 或日志文件。应用和安装器 Authenticode 状态均为 `NotSigned`。
+- 当前已有远端基线提交，可执行有意义的 diff、跟踪文件和敏感信息审查。本轮 updater 私钥位于仓库外目录并写入 GitHub Actions Secret，未进入工作树。此前曾暴露的测试密钥仍无供应商侧轮换证据。
+- release 产物和 bundle 目录未发现 `.env*`、MP3/WAV/M4A/MP4/MOV、SQLite/DB 或日志文件。安装器具备 Tauri updater 签名，但 Authenticode 状态仍为 `NotSigned`。
 - `pnpm audit --prod --registry=https://registry.npmjs.org` 退出码 0，未报告已知生产依赖漏洞；默认镜像没有 audit endpoint，Rust `cargo-audit` 未安装，Rust 依赖漏洞审计未完成。
 
 ### 2.2 尚未验证
@@ -45,7 +46,8 @@
 | 数据 | 分类 | 允许位置 | 禁止位置 |
 | --- | --- | --- | --- |
 | ASR/LLM API Key、Token、Cookie | 机密凭据 | Windows Credential Manager；开发测试可短期从进程环境读取 | SQLite、前端 store、URL、日志、截图、测试 fixture、`.env.example`、Git |
-| 原始音频、临时 WAV、导入副本 | 高敏感会议数据 | 受管 app-local-data 目录；用户明确选择的源文件位置 | WebView 内存、普通日志、测试快照、仓库、无界临时目录 |
+| 原始音频/视频、临时媒体、导入副本 | 高敏感会议数据 | 受管 app-local-data 目录；用户明确选择的源文件位置 | WebView 内存、普通日志、测试快照、仓库、无界临时目录 |
+| Tauri updater 私钥 | 发布根密钥 | GitHub Actions Secret；发布者受控凭据目录 | Git、构建日志、应用包、普通 CI artifact |
 | 完整转写、segments、Prompt、纪要 | 高敏感会议数据 | Rust 受信任内存、SQLite、详情页按需内存、用户显式导出 | 普通日志、URL、浏览器存储、错误监控 breadcrumb、Provider metadata |
 | 会议标题、参会人、文件名、绝对路径 | 敏感元数据 | SQLite、受控 UI、必要的系统文件对话框 | 普通日志、遥测、公开错误信息 |
 | task/session/operation ID、阶段、耗时、HTTP status、安全错误码 | 低敏感诊断数据 | 普通日志、IPC 状态事件 | 与正文、凭据或可逆路径绑定的诊断 dump |
@@ -128,7 +130,7 @@
 
 ## 7. 离线音频导入与临时文件
 
-- 只接受用户通过系统文件对话框明确选择的单个或批量 WAV、MP3、M4A 文件；扩展名只是提示，preflight 必须检查零字节、容器/MIME、可解析性、字节数、时长及 Provider 已验证的格式/大小能力。
+- 只接受用户通过系统文件对话框明确选择的单个或批量 WAV、MP3、M4A、MP4、MOV 文件；扩展名只是提示，preflight 必须检查零字节、容器/MIME、视频音轨、可解析性、字节数、时长及 Provider 已验证的格式/大小能力。
 - 外部源文件始终视为只读：应用不得修改、重命名、移动或删除源文件。处理、取消、会议删除和清理全部数据都不能影响外部源。
 - 后端把文件对话框结果转换为 opaque artifact ID；前端只接收显示名和安全元数据，不接收可用于任意文件访问的绝对路径。
 - preflight 和上传之间必须防止检查后替换风险。至少重新核对文件身份、大小和修改时间；需要完整性或去重时以流式方式计算 SHA-256，并在真正上传前复核。哈希属于敏感元数据，不进入普通日志。
@@ -204,14 +206,14 @@
 | `SEC-P25-007` | Medium | Open | Provider `Transcript`/`MinutesCandidate` 已自定义脱敏 `Debug`；但 domain `MeetingDetail`、`PersistedMeetingInput` 和响应结构仍可直接 Debug 输出正文 | 为剩余敏感 DTO 自定义 redacted Debug 或移除 Debug；建立日志 allowlist 测试 | Lead |
 | `SEC-P25-008` | Medium | Open | SQLite/WAL 明文保存 transcript、segments、minutes 和敏感文件名；未验证 app-local-data/staging ACL，也没有数据库加密 | 验证 Windows ACL/普通用户隔离；明确 BitLocker/加密基线与剩余风险；覆盖 WAL/备份/删除说明 | Lead + 安全 |
 | `SEC-P25-009` | Medium | Open | Provider remote request id 从可配置 allowlist header 原样进入 metadata，没有长度/字符或敏感模式限制 | 限长、限制字符并禁止 credential-like 值；不进入普通日志；补恶意 header 测试 | Provider |
-| `SEC-P25-010` | Medium | **CLOSED** | 浏览器 mock、UI accept 和真实 importer 已统一为 WAV/MP3/M4A；真实 importer 继续执行容器校验 | 保持能力定义单一来源；E2E 仍必须走 Tauri ingest | UI + Ingest |
+| `SEC-P25-010` | Medium | **CLOSED** | 浏览器测试客户端、UI accept 和真实 importer 已统一为 WAV/MP3/M4A/MP4/MOV；真实 importer 继续执行容器和音轨校验 | 保持能力定义单一来源；E2E 仍必须走 Tauri ingest | UI + Ingest |
 | `SEC-P25-011` | Medium | **PARTIAL** | `test:integration` 已存在且通过 1 个直接 Rust 闭环；仍只使用合成 WAV 和内存 SQLite，未覆盖桌面 IPC、磁盘重启、取消竞态、锁定清理、Credential Manager 和导出 | 扩展为独立磁盘/IPC 集成套件并纳入统一命令/CI | Lead + QA |
 | `SEC-P25-012` | Medium | Open | NSIS 和应用均未签名，未显式配置/实测安装模式、UAC、SmartScreen 或卸载残留 | 正式企业分发前签名；记录 current-user/per-machine 策略并实机安装/卸载 | Lead + QA |
 | `SEC-P25-013` | Low | **CLOSED** | 最终 `cargo fmt --check` 和全量 clippy `-D warnings` 均通过 | 继续纳入统一验证 | Lead |
 | `SEC-P25-014` | High | **FIXED-CODE / VERIFY** | `task_gate` 串行化取消与所有状态写入；先持久化 `CancelRequested` 再发信号，终态保存与令牌移除同锁完成；新增预取消流水线终态回归 | 增加真实同步屏障并发测试，证明取消先于 late success 时会议和 completed 状态均不残留 | Lead |
 | `SEC-P25-015` | High | **FIXED-CODE / VERIFY** | `task_gate` 串行化创建和重试；活动 token 拒绝覆盖；`max_attempts` 已强制执行并有上限/重启回归 | 增加并发 barrier/多线程单飞测试；验证不同 artifact 不被错误阻塞 | Lead |
 | `SEC-P25-016` | Medium | Open | Markdown 直接 `std::fs::write` 用户目标；磁盘满/崩溃时可能半覆盖已有文件 | 使用同目录临时文件、flush 和原子替换；补已有目标与写失败测试 | Lead |
-| `SEC-P0-002` | Medium | Open | `.git` 已存在但提交数为 0，全部文件未跟踪，无法做历史/diff 审查 | 首次提交前完成 secret scan/ignore 审查；建立基线提交后再做 Phase 6 diff | Lead |
+| `SEC-P0-002` | Medium | **CLOSED** | 已有远端基线提交；本轮完成 diff、ignore、tracked file 和高置信度 secret scan | 每次发布前持续执行相同扫描 | Lead |
 | `SEC-P0-007` | Medium | Open | 删除无法保证清除备份、SSD 残留或 Provider 副本 | UI/README 明确删除边界；实现 cleanup pending 与重试 | Lead |
 
 ## 13. 阶段安全门槛

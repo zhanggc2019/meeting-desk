@@ -17,23 +17,51 @@ function resetAppStore() {
   });
 }
 
-describe("Windows 离线音频工作台", () => {
+/** 创建已配置两个真实预设的离线测试客户端，密钥只存在于测试进程内存。 */
+async function createConfiguredClient() {
+  const client = createMockDesktopClient();
+  await client.saveProviderSettings({
+    transcription: {
+      presetId: "dashscope_funasr_cn",
+      kind: "dashscope_funasr",
+      endpoint: "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
+      model: "fun-asr",
+      apiKey: "test-transcription-key",
+      connectTimeoutMs: 5000,
+      requestTimeoutMs: 60_000,
+      maxRetries: 1,
+    },
+    minutes: {
+      presetId: "deepseek",
+      kind: "openai_compatible",
+      endpoint: "https://api.deepseek.com/chat/completions",
+      model: "deepseek-v4-flash",
+      apiKey: "test-minutes-key",
+      connectTimeoutMs: 5000,
+      requestTimeoutMs: 60_000,
+      maxRetries: 1,
+    },
+  });
+  return client;
+}
+
+describe("Windows 离线媒体工作台", () => {
   beforeEach(() => {
     resetAppStore();
   });
 
   it("校验单个文件并创建独立处理任务", async () => {
     const user = userEvent.setup();
-    render(<App client={createMockDesktopClient()} />);
+    render(<App client={await createConfiguredClient()} />);
 
     const file = new File(["safe mock bytes"], "示例讨论.mp3", { type: "audio/mpeg" });
-    const singleFileInput = screen.getByLabelText("选择本地音频文件");
+    const singleFileInput = screen.getByLabelText("选择本地媒体文件");
+    await waitFor(() => expect(singleFileInput).toBeEnabled());
     expect(singleFileInput).not.toHaveAttribute("multiple");
     await user.upload(singleFileInput, file);
 
     expect((await screen.findAllByText("示例讨论.mp3")).length).toBeGreaterThan(0);
     expect(screen.getByText("可处理")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "使用 Mock 体验" }));
     await user.click(screen.getByRole("button", { name: "开始处理" }));
 
     expect(await screen.findByRole("heading", { name: "任务队列" })).toBeInTheDocument();
@@ -42,49 +70,52 @@ describe("Windows 离线音频工作台", () => {
 
   it("对空文件显示校验错误且不允许提交", async () => {
     const user = userEvent.setup();
-    render(<App client={createMockDesktopClient()} />);
+    render(<App client={await createConfiguredClient()} />);
 
     const emptyFile = new File([], "空文件.wav", { type: "audio/wav" });
-    await user.upload(screen.getByLabelText("选择本地音频文件"), emptyFile);
+    const input = screen.getByLabelText("选择本地媒体文件");
+    await waitFor(() => expect(input).toBeEnabled());
+    await user.upload(input, emptyFile);
 
     expect(await screen.findByText("文件为空")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "使用 Mock 体验" }));
     expect(screen.getByRole("button", { name: "开始处理" })).toBeDisabled();
   });
 
   it("显式切换批量模式并为多个文件创建独立任务", async () => {
     const user = userEvent.setup();
-    const client = createMockDesktopClient();
+    const client = await createConfiguredClient();
     const createTasks = vi.spyOn(client, "createProcessingTasks");
     render(<App client={client} />);
 
     await user.click(screen.getByRole("button", { name: "批量处理" }));
     expect(screen.getByText(/单个文件失败不会影响本批次的其他文件/)).toBeInTheDocument();
-    expect(screen.getByLabelText("批量选择本地音频文件")).toHaveAttribute("multiple");
+    expect(screen.getByLabelText("批量选择本地媒体文件")).toHaveAttribute("multiple");
+    await waitFor(() => expect(screen.getByLabelText("批量选择本地媒体文件")).toBeEnabled());
 
     const files = [
       new File(["first safe mock bytes"], "课程上半场.mp3", { type: "audio/mpeg" }),
       new File(["second safe mock bytes"], "课程下半场.wav", { type: "audio/wav" }),
+      new File(["video container mock bytes"], "课程录像.mp4", { type: "video/mp4" }),
       new File([], "空录音.wav", { type: "audio/wav" }),
     ];
-    await user.upload(screen.getByLabelText("批量选择本地音频文件"), files);
+    await user.upload(screen.getByLabelText("批量选择本地媒体文件"), files);
 
     expect(await screen.findByRole("heading", { name: "本批次文件" })).toBeInTheDocument();
-    expect(screen.getByText("3 个文件")).toBeInTheDocument();
-    expect(screen.getByText("2 个可处理")).toBeInTheDocument();
+    expect(screen.getByText("4 个文件")).toBeInTheDocument();
+    expect(screen.getByText("3 个可处理")).toBeInTheDocument();
     expect(screen.getByText("1 个校验失败")).toBeInTheDocument();
     expect(screen.getByText("文件为空")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "继续添加" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "单个文件" })).toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: "使用 Mock 体验" }));
-    await user.click(screen.getByRole("button", { name: "创建 2 个处理任务" }));
+    await user.click(screen.getByRole("button", { name: "创建 3 个处理任务" }));
 
     expect(await screen.findByRole("heading", { name: "任务队列" })).toBeInTheDocument();
     expect(createTasks).toHaveBeenCalledOnce();
-    expect(createTasks.mock.calls[0]?.[0]).toHaveLength(2);
+    expect(createTasks.mock.calls[0]?.[0]).toHaveLength(3);
     expect((await screen.findAllByText("课程上半场.mp3")).length).toBeGreaterThanOrEqual(1);
     expect((await screen.findAllByText("课程下半场.wav")).length).toBeGreaterThanOrEqual(1);
+    expect((await screen.findAllByText("课程录像.mp4")).length).toBeGreaterThanOrEqual(1);
   });
 
   it("取消任务前确认，并只在后端确认后显示已取消", async () => {
@@ -135,9 +166,15 @@ describe("Windows 离线音频工作台", () => {
     expect(screen.getByLabelText("会议纪要模型")).toHaveValue("deepseek-v4-flash");
     expect(within(screen.getByLabelText("会议纪要模型")).getByRole("option", { name: "deepseek-v4-pro" })).toBeInTheDocument();
 
+    await user.selectOptions(screen.getByLabelText("会议纪要服务商"), "aliyun_bailian");
+    expect(screen.queryByLabelText("会议纪要服务地址")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("会议纪要模型")).toHaveValue("qwen-plus");
+    expect(within(screen.getByLabelText("会议纪要模型")).getByRole("option", { name: "qwen-flash（经济快速）" })).toBeInTheDocument();
+
     await user.selectOptions(screen.getByLabelText("会议纪要服务商"), "custom_openai_compatible");
     expect(screen.getByLabelText("会议纪要服务地址")).toBeInTheDocument();
     expect(screen.getByLabelText("会议纪要模型")).toHaveAttribute("placeholder", "输入已验证的模型名");
+    expect(screen.queryByRole("option", { name: /Mock/ })).not.toBeInTheDocument();
   });
 
   it("默认使用 DeepSeek 推荐模型保存参数且不回显密钥", async () => {
@@ -180,19 +217,25 @@ describe("Windows 离线音频工作台", () => {
     expect(await screen.findByRole("heading", { name: "开始前，请先连接两项服务" })).toBeInTheDocument();
     expect(screen.getByText("FunASR / ASR 转写接口")).toBeInTheDocument();
     expect(screen.getByText("纪要生成大模型接口")).toBeInTheDocument();
-    expect(screen.getAllByText("当前为 Mock 演示模式")).toHaveLength(2);
+    expect(screen.getAllByText("请补充：API Key")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "选择音频或视频" })).toBeDisabled();
+    expect(screen.getByLabelText("选择本地媒体文件")).toBeDisabled();
+    expect(screen.getByText("配置服务后选择媒体").closest(".file-dropzone")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.queryByText(/Mock/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "打开服务设置" }));
     expect(await screen.findByRole("heading", { name: "服务设置" })).toBeInTheDocument();
   });
 
-  it("明确启用 Mock 后仍持续标明演示模式", async () => {
+  it("测试连接会在对应服务区块内返回明确结果", async () => {
     const user = userEvent.setup();
     render(<App client={createMockDesktopClient()} />);
 
-    await user.click(await screen.findByRole("button", { name: "使用 Mock 体验" }));
-    expect(screen.getByRole("heading", { name: "当前使用 Mock 体验" })).toBeInTheDocument();
-    expect(screen.getByText(/不会调用 FunASR 或大模型/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    const transcriptionSection = await screen.findByRole("region", { name: "语音转写" });
+    await user.type(within(transcriptionSection).getByLabelText("语音转写 API Key"), "test-only-connection-key");
+    await user.click(within(transcriptionSection).getByRole("button", { name: "测试连接" }));
+    expect(await within(transcriptionSection).findByText(/Windows 桌面应用中测试连接/)).toBeInTheDocument();
   });
 
   it("在会议详情渲染安全的 Markdown 文档预览", async () => {

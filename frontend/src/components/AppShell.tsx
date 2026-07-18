@@ -28,7 +28,7 @@ export function AppShell({ children }: AppShellProps) {
           <span className="brand-mark" aria-hidden="true">听</span>
           <span className="brand-copy">
             <strong>听见纪要</strong>
-            <small>音频工作台</small>
+            <small>媒体工作台</small>
           </span>
         </div>
 

@@ -69,7 +69,7 @@ export function MeetingsPage() {
           <h1 tabIndex={-1}>会议记录</h1>
           <p>搜索已保存的标题、摘要和会议内容，不发起云端请求。</p>
         </div>
-        <button className="button primary" type="button" onClick={() => navigate("workspace")}><Plus size={16} aria-hidden="true" />选择音频文件</button>
+        <button className="button primary" type="button" onClick={() => navigate("workspace")}><Plus size={16} aria-hidden="true" />选择媒体文件</button>
       </header>
 
       <div className="search-row">
@@ -89,8 +89,8 @@ export function MeetingsPage() {
         <div className="empty-state">
           <FileSearch size={30} aria-hidden="true" />
           <h2>{query ? "没有找到匹配的会议" : "还没有会议记录"}</h2>
-          <p>{query ? "尝试其他关键词，或清除当前搜索。" : "选择本地音频文件，完成处理后会显示在这里。"}</p>
-          {query ? <button className="button secondary" type="button" onClick={() => setQuery("")}>清除搜索</button> : <button className="button primary" type="button" onClick={() => navigate("workspace")}>选择音频文件</button>}
+          <p>{query ? "尝试其他关键词，或清除当前搜索。" : "选择本地音频或视频，完成处理后会显示在这里。"}</p>
+          {query ? <button className="button secondary" type="button" onClick={() => setQuery("")}>清除搜索</button> : <button className="button primary" type="button" onClick={() => navigate("workspace")}>选择媒体文件</button>}
         </div>
       ) : null}
 

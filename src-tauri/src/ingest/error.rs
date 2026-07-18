@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// 离线音频导入对外暴露的稳定错误码。
+/// 离线媒体导入对外暴露的稳定错误码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IngestErrorCode {
@@ -19,6 +19,7 @@ pub enum IngestErrorCode {
     CorruptAudio,
     UnsupportedAudio,
     UnsupportedAudioTracks,
+    MissingAudioTrack,
     AudioStorageFailed,
     ArtifactNotFound,
 }
@@ -54,6 +55,8 @@ pub enum IngestError {
     UnsupportedAudio,
     #[error("multiple audio tracks are unsupported")]
     UnsupportedAudioTracks,
+    #[error("video does not contain a supported audio track")]
+    MissingAudioTrack,
     #[error("managed audio storage failed")]
     AudioStorageFailed,
     #[error("managed audio artifact was not found")]
@@ -78,6 +81,7 @@ impl IngestError {
             Self::CorruptAudio => IngestErrorCode::CorruptAudio,
             Self::UnsupportedAudio => IngestErrorCode::UnsupportedAudio,
             Self::UnsupportedAudioTracks => IngestErrorCode::UnsupportedAudioTracks,
+            Self::MissingAudioTrack => IngestErrorCode::MissingAudioTrack,
             Self::AudioStorageFailed => IngestErrorCode::AudioStorageFailed,
             Self::ArtifactNotFound => IngestErrorCode::ArtifactNotFound,
         }
@@ -100,6 +104,7 @@ impl IngestError {
             Self::CorruptAudio => "ingest.error.corrupt_audio",
             Self::UnsupportedAudio => "ingest.error.unsupported_audio",
             Self::UnsupportedAudioTracks => "ingest.error.unsupported_audio_tracks",
+            Self::MissingAudioTrack => "ingest.error.missing_audio_track",
             Self::AudioStorageFailed => "ingest.error.audio_storage_failed",
             Self::ArtifactNotFound => "ingest.error.artifact_not_found",
         }

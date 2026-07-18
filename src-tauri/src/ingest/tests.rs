@@ -121,6 +121,51 @@ fn valid_m4a() -> Vec<u8> {
     bytes
 }
 
+/// 生成带指定 handler、sample entry 和两秒时长的 ISO BMFF 媒体轨。
+fn iso_media_track(handler: &[u8; 4], sample_kind: &[u8; 4]) -> Vec<u8> {
+    let mut mdhd_payload = vec![0u8; 12];
+    mdhd_payload.extend_from_slice(&16_000u32.to_be_bytes());
+    mdhd_payload.extend_from_slice(&32_000u32.to_be_bytes());
+    mdhd_payload.extend_from_slice(&0u32.to_be_bytes());
+
+    let mut hdlr_payload = vec![0u8; 8];
+    hdlr_payload.extend_from_slice(handler);
+    hdlr_payload.extend_from_slice(&[0u8; 12]);
+
+    let sample_entry = iso_box(sample_kind, &[]);
+    let mut stsd_payload = vec![0u8; 4];
+    stsd_payload.extend_from_slice(&1u32.to_be_bytes());
+    stsd_payload.extend_from_slice(&sample_entry);
+
+    let stsd = iso_box(b"stsd", &stsd_payload);
+    let stbl = iso_box(b"stbl", &stsd);
+    let minf = iso_box(b"minf", &stbl);
+    let mut mdia_payload = Vec::new();
+    mdia_payload.extend_from_slice(&iso_box(b"mdhd", &mdhd_payload));
+    mdia_payload.extend_from_slice(&iso_box(b"hdlr", &hdlr_payload));
+    mdia_payload.extend_from_slice(&minf);
+    iso_box(b"trak", &iso_box(b"mdia", &mdia_payload))
+}
+
+/// 生成包含 H.264 视频轨以及可选 AAC 音频轨的最小 MP4/MOV 结构夹具。
+fn valid_iso_video(major_brand: &[u8; 4], include_audio: bool) -> Vec<u8> {
+    let mut ftyp_payload = Vec::new();
+    ftyp_payload.extend_from_slice(major_brand);
+    ftyp_payload.extend_from_slice(&0u32.to_be_bytes());
+    ftyp_payload.extend_from_slice(b"isom");
+
+    let mut moov_payload = iso_media_track(b"vide", b"avc1");
+    if include_audio {
+        moov_payload.extend_from_slice(&iso_media_track(b"soun", b"mp4a"));
+    }
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&iso_box(b"ftyp", &ftyp_payload));
+    bytes.extend_from_slice(&iso_box(b"mdat", &[1, 2, 3, 4]));
+    bytes.extend_from_slice(&iso_box(b"moov", &moov_payload));
+    bytes
+}
+
 /// 返回结果中的首个公开错误码。
 fn first_error_code(response: &super::ImportBatchResponse) -> IngestErrorCode {
     response.items[0]
@@ -204,6 +249,63 @@ fn imports_valid_m4a_fixture() {
         .expect("ready result must include artifact");
     assert_eq!(artifact.staging_metadata.mime_type, "audio/mp4");
     assert_eq!(artifact.staging_metadata.duration_ms, Some(2_000));
+}
+
+/// 验证带 AAC 音轨的 MP4 视频可以导入并保留视频 MIME。
+#[test]
+fn imports_valid_mp4_video_fixture() {
+    let source_root = TempDir::new().expect("source tempdir must be created");
+    let staging = TempDir::new().expect("staging tempdir must be created");
+    let source = write_fixture(&source_root, "lecture.mp4", &valid_iso_video(b"isom", true));
+    let importer = create_importer(&staging);
+
+    let response = importer.import_selected_files(single_request(), vec![source]);
+
+    assert_eq!(response.items[0].status, ImportItemStatus::Ready);
+    let artifact = response.items[0]
+        .artifact
+        .as_ref()
+        .expect("ready result must include artifact");
+    assert_eq!(artifact.staging_metadata.mime_type, "video/mp4");
+    assert_eq!(artifact.staging_metadata.duration_ms, Some(2_000));
+}
+
+/// 验证带 AAC 音轨的 QuickTime MOV 视频可以导入。
+#[test]
+fn imports_valid_mov_video_fixture() {
+    let source_root = TempDir::new().expect("source tempdir must be created");
+    let staging = TempDir::new().expect("staging tempdir must be created");
+    let source = write_fixture(
+        &source_root,
+        "interview.mov",
+        &valid_iso_video(b"qt  ", true),
+    );
+    let importer = create_importer(&staging);
+
+    let response = importer.import_selected_files(single_request(), vec![source]);
+
+    assert_eq!(response.items[0].status, ImportItemStatus::Ready);
+    let artifact = response.items[0]
+        .artifact
+        .as_ref()
+        .expect("ready result must include artifact");
+    assert_eq!(artifact.staging_metadata.mime_type, "video/quicktime");
+}
+
+/// 验证没有音轨的视频在上传前给出明确错误。
+#[test]
+fn rejects_video_without_audio_track() {
+    let source_root = TempDir::new().expect("source tempdir must be created");
+    let staging = TempDir::new().expect("staging tempdir must be created");
+    let source = write_fixture(&source_root, "silent.mp4", &valid_iso_video(b"isom", false));
+    let importer = create_importer(&staging);
+
+    let response = importer.import_selected_files(single_request(), vec![source]);
+
+    assert_eq!(
+        first_error_code(&response),
+        IngestErrorCode::MissingAudioTrack
+    );
 }
 
 /// 验证空音频返回稳定错误且不留下 part 文件。
@@ -371,6 +473,40 @@ fn imports_repository_real_mp3_when_present() {
             .staging_metadata
             .mime_type,
         "audio/mpeg"
+    );
+}
+
+/// 验证由外部测试环境提供的真实 MP4/MOV 能通过媒体导入，不把样例提交到仓库。
+#[test]
+fn imports_external_real_video_when_configured() {
+    let Some(source) = std::env::var_os("MEETING_DESK_TEST_VIDEO").map(PathBuf::from) else {
+        return;
+    };
+    assert!(source.is_file(), "configured video fixture must exist");
+    let expected_mime = match source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("mp4") => "video/mp4",
+        Some("mov") => "video/quicktime",
+        _ => panic!("configured video fixture must use mp4 or mov extension"),
+    };
+    let staging = TempDir::new().expect("staging tempdir must be created");
+    let importer = create_importer(&staging);
+
+    let response = importer.import_selected_files(single_request(), vec![source]);
+
+    assert_eq!(response.items[0].status, ImportItemStatus::Ready);
+    assert_eq!(
+        response.items[0]
+            .artifact
+            .as_ref()
+            .expect("ready result must include artifact")
+            .staging_metadata
+            .mime_type,
+        expected_mime
     );
 }
 

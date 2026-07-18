@@ -42,7 +42,7 @@ const meeting: MeetingDetail = {
       { title: "质量验证", summary: "在扩大范围前先完成错误与取消路径验证。", evidenceSegmentIds: ["segment-2"] },
     ],
     conclusions: [{ content: "首轮交付以可验证的核心闭环为准。", evidenceSegmentIds: ["segment-1"] }],
-    decisions: [{ content: "本周先完成 Mock 全流程联调。", evidenceSegmentIds: ["segment-2"] }],
+    decisions: [{ content: "本周先完成本地全流程联调。", evidenceSegmentIds: ["segment-2"] }],
     actionItems: [
       {
         description: "整理完整验收清单",
@@ -57,19 +57,19 @@ const meeting: MeetingDetail = {
         kind: "risk",
         description: "真实服务字段仍需验证",
         impact: "可能影响最终适配周期",
-        mitigation: "先保持 Provider 抽象并使用 Mock 联调",
+        mitigation: "先保持 Provider 抽象并使用本地测试流程联调",
         evidenceSegmentIds: ["segment-4"],
       },
     ],
   },
   transcript: {
     schemaVersion: "1",
-    text: "我们先聚焦核心闭环。Mock 流程完成后，再接入真实服务。测试团队整理验收清单。真实服务字段仍需验证。",
+    text: "我们先聚焦核心闭环。本地测试流程完成后，再接入真实服务。测试团队整理验收清单。真实服务字段仍需验证。",
     language: "zh-CN",
     durationMs: 2_430_000,
     segments: [
       { id: "segment-1", startMs: 0, endMs: 15_000, speakerLabel: "说话人 A", text: "我们先聚焦核心闭环。" },
-      { id: "segment-2", startMs: 15_000, endMs: 34_000, speakerLabel: "说话人 B", text: "Mock 流程完成后，再接入真实服务。" },
+      { id: "segment-2", startMs: 15_000, endMs: 34_000, speakerLabel: "说话人 B", text: "本地测试流程完成后，再接入真实服务。" },
       { id: "segment-3", startMs: 34_000, endMs: 46_000, speakerLabel: "说话人 A", text: "测试团队整理验收清单。" },
       { id: "segment-4", startMs: 46_000, endMs: 58_000, speakerLabel: "说话人 B", text: "真实服务字段仍需验证。" },
     ],
@@ -129,28 +129,34 @@ const initialTasks: ProcessingTask[] = [
 
 const initialSettings: PublicSettings = {
   transcription: {
-    presetId: "mock",
-    kind: "mock",
-    endpoint: "",
-    model: "mock-asr",
+    presetId: "dashscope_funasr_cn",
+    kind: "dashscope_funasr",
+    endpoint: "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
+    model: "fun-asr",
     secretConfigured: false,
+    ready: false,
+    readiness: "incomplete",
+    validationMessage: "请补充：API Key",
     connectTimeoutMs: 10_000,
     requestTimeoutMs: 120_000,
     maxRetries: 2,
   },
   minutes: {
-    presetId: "mock",
-    kind: "mock",
-    endpoint: "",
-    model: "mock-minutes",
+    presetId: "deepseek",
+    kind: "openai_compatible",
+    endpoint: "https://api.deepseek.com/chat/completions",
+    model: "deepseek-v4-flash",
     secretConfigured: false,
+    ready: false,
+    readiness: "incomplete",
+    validationMessage: "请补充：API Key",
     connectTimeoutMs: 10_000,
     requestTimeoutMs: 120_000,
     maxRetries: 2,
   },
 };
 
-/** 生成与 Mock 导出结果一致的 Markdown 预览文本。 */
+/** 生成与浏览器测试导出结果一致的 Markdown 预览文本。 */
 function createMeetingMarkdown(): string {
   return `# 产品交付节奏讨论
 
@@ -173,24 +179,25 @@ function createMeetingMarkdown(): string {
 
 ## 完整逐字稿
 
-我们先聚焦核心闭环。Mock 流程完成后，再接入真实服务。`;
+我们先聚焦核心闭环。本地测试流程完成后，再接入真实服务。`;
 }
 
-/** 根据扩展名返回供 Mock 校验使用的 MIME。 */
+/** 根据扩展名返回供浏览器测试校验使用的 MIME。 */
 function inferMimeType(name: string, providedType: string): string | null {
-  if (providedType.startsWith("audio/")) {
-    return providedType;
-  }
   const extension = name.split(".").pop()?.toLowerCase();
   const mimeByExtension: Record<string, string> = {
     mp3: "audio/mpeg",
     wav: "audio/wav",
     m4a: "audio/mp4",
+    mp4: "video/mp4",
+    mov: "video/quicktime",
   };
-  return extension ? (mimeByExtension[extension] ?? null) : null;
+  const inferred = extension ? (mimeByExtension[extension] ?? null) : null;
+  if (!inferred) return null;
+  return providedType === "" || providedType === inferred ? inferred : null;
 }
 
-/** 创建只含安全显示信息的 Mock 导入候选项。 */
+/** 创建只含安全显示信息的浏览器测试导入候选项。 */
 function createCandidate(file: BrowserFileDescriptor, index: number): ImportCandidate {
   const mimeType = inferMimeType(file.name, file.type);
   const isEmpty = file.size === 0;
@@ -217,7 +224,17 @@ function resolveMockSecretStatus(
   return Boolean(nextSecret) || (currentPresetId === nextPresetId && currentConfigured);
 }
 
-/** 返回一个完全离线、确定性的前端 Mock 客户端。 */
+/** 判断浏览器测试客户端中的两个真实 Provider 是否均已完成必要配置。 */
+function areProvidersReady(settings: PublicSettings): boolean {
+  return [settings.transcription, settings.minutes].every((provider) => (
+    provider.kind !== "mock"
+    && provider.endpoint.trim().length > 0
+    && provider.model.trim().length > 0
+    && provider.secretConfigured
+  ));
+}
+
+/** 返回一个完全离线、确定性的浏览器测试客户端。 */
 export function createMockDesktopClient(): DesktopClient {
   let tasks = initialTasks.map((task) => ({ ...task, availableActions: [...task.availableActions] }));
   let settings = structuredClone(initialSettings);
@@ -226,21 +243,27 @@ export function createMockDesktopClient(): DesktopClient {
 
   return {
     async selectAudioFiles(mode) {
-      const mockFiles =
+      if (!areProvidersReady(settings)) {
+        throw new Error("请先完成语音转写和会议纪要服务配置，再选择音频或视频");
+      }
+      const sampleFiles =
         mode === "batch"
           ? [
               { name: "演示会议.mp3", size: 12_582_912, type: "audio/mpeg" },
-              { name: "客户访谈.m4a", size: 8_388_608, type: "audio/mp4" },
+              { name: "课程录像.mp4", size: 18_388_608, type: "video/mp4" },
             ]
           : [{ name: "演示会议.mp3", size: 12_582_912, type: "audio/mpeg" }];
-      const candidates = mockFiles.map((file, index) => createCandidate(file, sequence + index));
-      sequence += mockFiles.length;
+      const candidates = sampleFiles.map((file, index) => createCandidate(file, sequence + index));
+      sequence += sampleFiles.length;
       candidates.forEach((candidate) => {
         if (candidate.artifactId) artifactNames.set(candidate.artifactId, candidate.displayName);
       });
       return candidates;
     },
     async registerBrowserFiles(files) {
+      if (!areProvidersReady(settings)) {
+        throw new Error("请先完成语音转写和会议纪要服务配置，再选择音频或视频");
+      }
       const candidates = files.map((file, index) => createCandidate(file, sequence + index));
       sequence += files.length;
       candidates.forEach((candidate) => {
@@ -364,6 +387,18 @@ export function createMockDesktopClient(): DesktopClient {
       return structuredClone(settings);
     },
     async saveProviderSettings(input: SaveProviderSettingsInput) {
+      const transcriptionSecretConfigured = resolveMockSecretStatus(
+        settings.transcription.presetId,
+        input.transcription.presetId,
+        settings.transcription.secretConfigured,
+        input.transcription.apiKey,
+      );
+      const minutesSecretConfigured = resolveMockSecretStatus(
+        settings.minutes.presetId,
+        input.minutes.presetId,
+        settings.minutes.secretConfigured,
+        input.minutes.apiKey,
+      );
       settings = {
         transcription: {
           presetId: input.transcription.presetId,
@@ -373,12 +408,10 @@ export function createMockDesktopClient(): DesktopClient {
           connectTimeoutMs: input.transcription.connectTimeoutMs,
           requestTimeoutMs: input.transcription.requestTimeoutMs,
           maxRetries: input.transcription.maxRetries,
-          secretConfigured: resolveMockSecretStatus(
-            settings.transcription.presetId,
-            input.transcription.presetId,
-            settings.transcription.secretConfigured,
-            input.transcription.apiKey,
-          ),
+          secretConfigured: transcriptionSecretConfigured,
+          ready: transcriptionSecretConfigured,
+          readiness: transcriptionSecretConfigured ? "ready" : "incomplete",
+          validationMessage: transcriptionSecretConfigured ? "真实 Provider 配置已就绪" : "请补充：API Key",
         },
         minutes: {
           presetId: input.minutes.presetId,
@@ -388,25 +421,20 @@ export function createMockDesktopClient(): DesktopClient {
           connectTimeoutMs: input.minutes.connectTimeoutMs,
           requestTimeoutMs: input.minutes.requestTimeoutMs,
           maxRetries: input.minutes.maxRetries,
-          secretConfigured: resolveMockSecretStatus(
-            settings.minutes.presetId,
-            input.minutes.presetId,
-            settings.minutes.secretConfigured,
-            input.minutes.apiKey,
-          ),
+          secretConfigured: minutesSecretConfigured,
+          ready: minutesSecretConfigured,
+          readiness: minutesSecretConfigured ? "ready" : "incomplete",
+          validationMessage: minutesSecretConfigured ? "真实 Provider 配置已就绪" : "请补充：API Key",
         },
       };
       return structuredClone(settings);
     },
     async testProviderConnection(target) {
       const provider = settings[target];
-      if (provider.kind === "mock") {
-        return { ok: true, safeMessage: "Mock 服务可用" };
-      }
       if (!provider.secretConfigured) {
         return { ok: false, safeMessage: "请先保存 API Key" };
       }
-      return { ok: false, safeMessage: "真实 Provider 字段尚未完成最小验证，未发送网络请求" };
+      return { ok: false, safeMessage: "浏览器测试环境不发送网络请求，请在 Windows 桌面应用中测试连接" };
     },
   };
 }

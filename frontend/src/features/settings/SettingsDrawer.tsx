@@ -30,6 +30,7 @@ interface ProviderPresetDefinition {
 const DASHSCOPE_FUNASR_CN_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription";
 const DASHSCOPE_FUNASR_INTL_ENDPOINT = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription";
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions";
+const ALIYUN_BAILIAN_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 
 const TRANSCRIPTION_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
   {
@@ -57,15 +58,6 @@ const TRANSCRIPTION_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
     description: "适合阿里云国际站新加坡地域账号，官方请求地址由软件维护。",
   },
   {
-    id: "mock",
-    label: "Mock（演示与测试）",
-    kind: "mock",
-    endpoint: "",
-    defaultModel: "mock-asr",
-    models: [],
-    description: "仅生成固定演示数据，不会上传音频。",
-  },
-  {
     id: "custom_openai_compatible",
     label: "自建 / 自定义（高级）",
     kind: "openai_compatible",
@@ -90,22 +82,26 @@ const MINUTES_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
     description: "使用 DeepSeek 官方 OpenAI-compatible 接口。",
   },
   {
-    id: "mock",
-    label: "Mock（演示与测试）",
-    kind: "mock",
-    endpoint: "",
-    defaultModel: "mock-minutes",
-    models: [],
-    description: "仅生成固定演示纪要，不调用大模型。",
+    id: "aliyun_bailian",
+    label: "阿里云百炼（通义千问）",
+    kind: "openai_compatible",
+    endpoint: ALIYUN_BAILIAN_ENDPOINT,
+    defaultModel: "qwen-plus",
+    models: [
+      { value: "qwen-plus", label: "qwen-plus（推荐）" },
+      { value: "qwen-flash", label: "qwen-flash（经济快速）" },
+      { value: "qwen-max", label: "qwen-max" },
+    ],
+    description: "使用阿里云百炼 OpenAI-compatible Chat Completions 接口。",
   },
   {
     id: "custom_openai_compatible",
-    label: "自定义 OpenAI-compatible",
+    label: "第三方 OpenAI-compatible",
     kind: "openai_compatible",
     endpoint: "",
     defaultModel: "",
     models: [],
-    description: "用于其他经过验证的 OpenAI-compatible 大模型服务。",
+    description: "填写第三方兼容 OpenAI Chat Completions 的完整请求地址和模型名。",
   },
 ];
 
@@ -124,10 +120,11 @@ function getPresetDefinition(target: ProviderTarget, presetId: ProviderPresetId)
 function inferPresetId(settings: PublicProviderSettings, target: ProviderTarget): ProviderPresetId {
   const allowed = getPresetDefinitions(target).some((preset) => preset.id === settings.presetId);
   if (settings.presetId && allowed) return settings.presetId;
-  if (settings.kind === "mock") return "mock";
+  if (settings.kind === "mock") return target === "transcription" ? "dashscope_funasr_cn" : "deepseek";
   if (target === "transcription" && settings.endpoint === DASHSCOPE_FUNASR_CN_ENDPOINT) return "dashscope_funasr_cn";
   if (target === "transcription" && settings.endpoint === DASHSCOPE_FUNASR_INTL_ENDPOINT) return "dashscope_funasr_intl";
   if (target === "minutes" && settings.endpoint === DEEPSEEK_ENDPOINT) return "deepseek";
+  if (target === "minutes" && settings.endpoint === ALIYUN_BAILIAN_ENDPOINT) return "aliyun_bailian";
   return "custom_openai_compatible";
 }
 
@@ -198,6 +195,19 @@ function isSecretConfiguredForDraft(
   return settings.secretConfigured && inferPresetId(settings, target) === draft.presetId;
 }
 
+interface ConnectionTestState {
+  testing: boolean;
+  result: { ok: boolean; message: string } | null;
+}
+
+/** 创建两个 Provider 相互独立的连接测试初始状态。 */
+function getEmptyConnectionTests(): Record<ProviderTarget, ConnectionTestState> {
+  return {
+    transcription: { testing: false, result: null },
+    minutes: { testing: false, result: null },
+  };
+}
+
 /** 渲染只展示公开配置状态的 Provider 设置抽屉。 */
 export function SettingsDrawer() {
   const client = useDesktopClient();
@@ -211,11 +221,13 @@ export function SettingsDrawer() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [connectionTests, setConnectionTests] = useState(getEmptyConnectionTests);
 
   useEffect(() => {
     if (!open) return;
     setLoading(true);
     setError(null);
+    setConnectionTests(getEmptyConnectionTests());
     client.getPublicSettings()
       .then((settings) => {
         setPublicSettings(settings);
@@ -248,6 +260,7 @@ export function SettingsDrawer() {
       setTranscription(toDraft(saved.transcription, "transcription"));
       setMinutes(toDraft(saved.minutes, "minutes"));
       setNotice("设置已保存");
+      setConnectionTests(getEmptyConnectionTests());
       markSettingsUpdated();
     } catch (reason) {
       setError(getSafeErrorMessage(reason));
@@ -260,13 +273,37 @@ export function SettingsDrawer() {
   async function testConnection(target: ProviderTarget) {
     setError(null);
     setNotice(null);
+    setConnectionTests((current) => ({
+      ...current,
+      [target]: { testing: true, result: null },
+    }));
     try {
+      const saved = await client.saveProviderSettings({ transcription, minutes });
+      setPublicSettings(saved);
+      setTranscription(toDraft(saved.transcription, "transcription"));
+      setMinutes(toDraft(saved.minutes, "minutes"));
+      markSettingsUpdated();
       const result = await client.testProviderConnection(target);
-      if (result.ok) setNotice(result.safeMessage);
-      else setError(result.safeMessage);
+      setConnectionTests((current) => ({
+        ...current,
+        [target]: { testing: false, result: { ok: result.ok, message: result.safeMessage } },
+      }));
     } catch (reason) {
-      setError(getSafeErrorMessage(reason));
+      setConnectionTests((current) => ({
+        ...current,
+        [target]: { testing: false, result: { ok: false, message: getSafeErrorMessage(reason) } },
+      }));
     }
+  }
+
+  /** 更新一个 Provider 草稿并清除该区块已经过期的连接结果。 */
+  function updateProvider(target: ProviderTarget, value: ProviderDraft) {
+    if (target === "transcription") setTranscription(value);
+    else setMinutes(value);
+    setConnectionTests((current) => ({
+      ...current,
+      [target]: { testing: false, result: null },
+    }));
   }
 
   if (!open) return null;
@@ -282,27 +319,31 @@ export function SettingsDrawer() {
 
         {loading ? <div className="loading-state"><LoaderCircle className="spin" size={18} aria-hidden="true" />正在读取公开设置…</div> : (
           <form className="settings-form" onSubmit={handleSave}>
-            <ProviderSection
-              target="transcription"
-              title="语音转写"
-              description="接收离线音频并返回完整逐字稿"
-              value={transcription}
-              secretConfigured={isSecretConfiguredForDraft(publicSettings.transcription, transcription, "transcription")}
-              onChange={setTranscription}
-              onTest={() => void testConnection("transcription")}
-            />
-            <ProviderSection
-              target="minutes"
-              title="会议纪要"
-              description="把逐字稿转换为经过校验的结构化纪要"
-              value={minutes}
-              secretConfigured={isSecretConfiguredForDraft(publicSettings.minutes, minutes, "minutes")}
-              onChange={setMinutes}
-              onTest={() => void testConnection("minutes")}
-            />
+            <div className="settings-form-scroll">
+              <ProviderSection
+                target="transcription"
+                title="语音转写"
+                description="接收离线音频或视频并返回完整逐字稿"
+                value={transcription}
+                secretConfigured={isSecretConfiguredForDraft(publicSettings.transcription, transcription, "transcription")}
+                connectionTest={connectionTests.transcription}
+                onChange={(value) => updateProvider("transcription", value)}
+                onTest={() => void testConnection("transcription")}
+              />
+              <ProviderSection
+                target="minutes"
+                title="会议纪要"
+                description="把逐字稿转换为经过校验的结构化纪要"
+                value={minutes}
+                secretConfigured={isSecretConfiguredForDraft(publicSettings.minutes, minutes, "minutes")}
+                connectionTest={connectionTests.minutes}
+                onChange={(value) => updateProvider("minutes", value)}
+                onTest={() => void testConnection("minutes")}
+              />
 
-            {error ? <div className="inline-alert error" role="alert">{error}</div> : null}
-            {notice ? <div className="inline-alert success" role="status"><CheckCircle2 size={16} aria-hidden="true" />{notice}</div> : null}
+              {error ? <div className="inline-alert error" role="alert">{error}</div> : null}
+              {notice ? <div className="inline-alert success" role="status"><CheckCircle2 size={16} aria-hidden="true" />{notice}</div> : null}
+            </div>
 
             <div className="drawer-actions">
               <button className="button secondary" type="button" onClick={close} disabled={saving}>取消</button>
@@ -321,16 +362,16 @@ interface ProviderSectionProps {
   description: string;
   value: ProviderDraft;
   secretConfigured: boolean;
+  connectionTest: ConnectionTestState;
   onChange: (value: ProviderDraft) => void;
   onTest: () => void;
 }
 
 /** 渲染单个 Provider 的预设配置字段，不回显已有密钥。 */
-function ProviderSection({ target, title, description, value, secretConfigured, onChange, onTest }: ProviderSectionProps) {
+function ProviderSection({ target, title, description, value, secretConfigured, connectionTest, onChange, onTest }: ProviderSectionProps) {
   const presets = getPresetDefinitions(target);
   const selectedPreset = getPresetDefinition(target, value.presetId);
   const isCustom = selectedPreset.id === "custom_openai_compatible";
-  const isMock = selectedPreset.id === "mock";
 
   /** 更新一个 Provider 草稿字段。 */
   function update<K extends keyof ProviderDraft>(key: K, nextValue: ProviderDraft[K]) {
@@ -357,7 +398,7 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
           <small className="field-help">{selectedPreset.description}</small>
         </label>
 
-        {!isCustom && !isMock ? (
+        {!isCustom ? (
           <div className="trusted-endpoint full-field" role="note">
             <ShieldCheck size={16} aria-hidden="true" />
             <span><strong>官方地址由软件维护</strong><small>无需填写 Base URL，保存时由桌面端校验并使用受信任地址。</small></span>
@@ -383,13 +424,9 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
           </>
         ) : null}
 
-        {!isMock ? (
-          <label className="field full-field">API Key
-            <span className="secret-input"><KeyRound size={16} aria-hidden="true" /><input aria-label={`${title} API Key`} value={value.apiKey} onChange={(event) => update("apiKey", event.target.value)} type="password" autoComplete="new-password" placeholder={secretConfigured ? "已安全保存；留空表示不替换" : "输入后交由 Windows 凭据管理器保存"} /></span>
-          </label>
-        ) : (
-          <div className="mock-provider-note full-field">Mock 使用内置固定数据，无需地址、模型或 API Key。</div>
-        )}
+        <label className="field full-field">API Key
+          <span className="secret-input"><KeyRound size={16} aria-hidden="true" /><input aria-label={`${title} API Key`} value={value.apiKey} onChange={(event) => update("apiKey", event.target.value)} type="password" autoComplete="new-password" placeholder={secretConfigured ? "已安全保存；留空表示不替换" : "输入后交由 Windows 凭据管理器保存"} /></span>
+        </label>
       </div>
 
       <details className="advanced-settings">
@@ -402,9 +439,17 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
       </details>
 
       <div className="provider-footer">
-        <span className={`secret-status${secretConfigured ? " configured" : ""}`}>{isMock ? "Mock 模式无需密钥" : secretConfigured ? "密钥已配置" : "尚未配置密钥"}</span>
-        <button className="button quiet" type="button" onClick={onTest}>测试连接</button>
+        <span className={`secret-status${secretConfigured ? " configured" : ""}`}>{secretConfigured ? "密钥已配置" : "尚未配置密钥"}</span>
+        <button className="button quiet connection-test-button" type="button" onClick={onTest} disabled={connectionTest.testing}>
+          {connectionTest.testing ? <><LoaderCircle className="spin" size={15} aria-hidden="true" />正在测试</> : "测试连接"}
+        </button>
       </div>
+      {connectionTest.result ? (
+        <div className={`connection-result ${connectionTest.result.ok ? "success" : "error"}`} role={connectionTest.result.ok ? "status" : "alert"}>
+          {connectionTest.result.ok ? <CheckCircle2 size={15} aria-hidden="true" /> : null}
+          <span>{connectionTest.result.message}</span>
+        </div>
+      ) : null}
     </section>
   );
 }

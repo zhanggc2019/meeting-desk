@@ -121,10 +121,17 @@ pub fn create_processing_tasks(
         ));
     }
     let settings = read_public_settings(&state.repository)?;
+    if settings.transcription.kind == "mock" || settings.minutes.kind == "mock" {
+        return Err(CommandError::new(
+            "legacy_mock_disabled",
+            "旧版演示模式已停用，请在服务设置中重新配置转写和纪要服务",
+            false,
+        ));
+    }
     if settings.transcription.kind != "mock" || settings.minutes.kind != "mock" {
         return Err(CommandError::new(
             "real_provider_contract_unverified",
-            "真实 Provider 字段尚未验证，请先使用 Mock 完成流程或提供经过验证的字段映射",
+            "真实 Provider 处理链路尚未完成验证，当前不能创建处理任务",
             false,
         ));
     }
@@ -283,7 +290,7 @@ pub fn retry_processing_task(
     Ok(task)
 }
 
-/// 通过受信任系统文件对话框重新选择音频，并把新 artifact 绑定到原中断任务。
+/// 通过受信任系统文件对话框重新选择媒体，并把新 artifact 绑定到原中断任务。
 #[tauri::command]
 pub async fn reselect_processing_task(
     app: AppHandle,
@@ -311,7 +318,7 @@ pub async fn reselect_processing_task(
     let selected = app
         .dialog()
         .file()
-        .add_filter("音频文件", &["wav", "mp3", "m4a"])
+        .add_filter("音频和视频文件", &["wav", "mp3", "m4a", "mp4", "mov"])
         .blocking_pick_file();
     let Some(path) = selected.and_then(|value| value.into_path().ok()) else {
         return find_task(&state.repository, &task_id);
@@ -325,14 +332,14 @@ pub async fn reselect_processing_task(
     )
     .await?;
     let candidate = candidates.into_iter().next().ok_or_else(|| {
-        CommandError::new("audio_not_selected", "没有选择可处理的音频文件", false)
+        CommandError::new("audio_not_selected", "没有选择可处理的媒体文件", false)
     })?;
     let artifact_id = candidate.artifact_id.ok_or_else(|| {
         CommandError::new(
             "audio_validation_failed",
             candidate
                 .safe_message
-                .unwrap_or_else(|| "所选音频未通过校验".to_string()),
+                .unwrap_or_else(|| "所选媒体未通过校验".to_string()),
             false,
         )
     })?;
@@ -897,7 +904,7 @@ fn find_task(repository: &MeetingRepository, task_id: &str) -> Result<TaskRecord
         .ok_or_else(|| CommandError::new("task_not_found", "任务不存在或已被移除", false))
 }
 
-/// 读取公开设置；不存在时使用环境变量和 mock 安全默认值。
+/// 读取公开设置；不存在时使用环境变量与真实服务安全默认值。
 fn read_public_settings(
     repository: &MeetingRepository,
 ) -> Result<crate::domain::PublicSettings, CommandError> {

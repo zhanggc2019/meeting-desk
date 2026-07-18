@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "听见纪要",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.internal.meetingdesk",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -28,12 +28,24 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "shortDescription": "离线音频转写与 AI 会议纪要工具",
+    "createUpdaterArtifacts": true,
+    "shortDescription": "离线音视频转写与 AI 会议纪要工具",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI5MDU1NzgyMURGMDQ0RjQKUldUMFJQQWRnbGNGdWFzdHFJUUZCdHp1dWd4U2cySjVpMk91dHBqSmp0bnpsMkx5blN6SW1hL1gK",
+      "endpoints": [
+        "https://github.com/zhanggc2019/meeting-desk/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

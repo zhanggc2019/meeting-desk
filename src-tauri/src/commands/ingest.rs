@@ -7,6 +7,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::app_state::{AppState, RegisteredArtifact};
 use crate::commands::CommandError;
+use crate::domain::PublicSettings;
 use crate::ingest::{
     ImportBatchResponse, ImportItemStatus, ImportRequest, ImportSelectionMode, OfflineAudioImporter,
 };
@@ -32,11 +33,13 @@ pub async fn select_audio_files(
     state: State<'_, AppState>,
     selection_mode: ImportSelectionMode,
 ) -> Result<Vec<ImportCandidate>, CommandError> {
+    let settings = crate::commands::settings::load_evaluated_settings(state.inner())?;
+    ensure_audio_selection_ready(&settings)?;
     let paths = match selection_mode {
         ImportSelectionMode::Single => app
             .dialog()
             .file()
-            .add_filter("音频文件", &["wav", "mp3", "m4a"])
+            .add_filter("音频和视频文件", &["wav", "mp3", "m4a", "mp4", "mov"])
             .blocking_pick_file()
             .and_then(|path| path.into_path().ok())
             .into_iter()
@@ -44,7 +47,7 @@ pub async fn select_audio_files(
         ImportSelectionMode::Batch => app
             .dialog()
             .file()
-            .add_filter("音频文件", &["wav", "mp3", "m4a"])
+            .add_filter("音频和视频文件", &["wav", "mp3", "m4a", "mp4", "mov"])
             .blocking_pick_files()
             .unwrap_or_default()
             .into_iter()
@@ -68,6 +71,19 @@ pub async fn select_audio_files(
         .collect::<HashSet<_>>();
     mark_active_artifacts_unavailable(&mut candidates, &active_artifacts);
     Ok(candidates)
+}
+
+/// 仅在转写和纪要服务均完整配置时允许打开文件选择器。
+fn ensure_audio_selection_ready(settings: &PublicSettings) -> Result<(), CommandError> {
+    if settings.transcription.ready && settings.minutes.ready {
+        Ok(())
+    } else {
+        Err(CommandError::new(
+            "provider_configuration_required",
+            "请先完成语音转写和会议纪要服务配置，再选择音频",
+            false,
+        ))
+    }
 }
 
 /// 删除尚未处理的受管暂存副本；不会删除用户原始文件。
@@ -279,14 +295,15 @@ fn map_candidates(
 /// 将稳定错误键转换为简短中文提示，不暴露路径和解析细节。
 fn localize_ingest_error(key: &str) -> String {
     match key {
-        "ingest.error.empty_audio" => "音频文件为空".to_string(),
-        "ingest.error.file_too_large" => "音频文件超过大小限制".to_string(),
-        "ingest.error.unsupported_extension" => "仅支持 WAV、MP3 和 M4A".to_string(),
-        "ingest.error.extension_content_mismatch" => "文件扩展名与实际音频格式不一致".to_string(),
-        "ingest.error.corrupt_audio" => "音频文件已损坏或结构不完整".to_string(),
+        "ingest.error.empty_audio" => "媒体文件为空".to_string(),
+        "ingest.error.file_too_large" => "媒体文件超过大小限制".to_string(),
+        "ingest.error.unsupported_extension" => "仅支持 WAV、MP3、M4A、MP4 和 MOV".to_string(),
+        "ingest.error.extension_content_mismatch" => "文件扩展名与实际媒体格式不一致".to_string(),
+        "ingest.error.corrupt_audio" => "媒体文件已损坏或结构不完整".to_string(),
+        "ingest.error.missing_audio_track" => "视频中没有可转写的音轨".to_string(),
         "ingest.error.batch_limit_exceeded" => "批量文件数量或总大小超过限制".to_string(),
         "ingest.error.source_changed" => "导入期间源文件发生变化，请重新选择".to_string(),
-        _ => "音频文件无法导入，请检查文件后重试".to_string(),
+        _ => "媒体文件无法导入，请检查文件后重试".to_string(),
     }
 }
 
@@ -298,6 +315,28 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    /// 构造后端门禁测试使用的已就绪公开设置。
+    fn ready_settings() -> PublicSettings {
+        let mut settings = crate::config::provider_settings_from_environment();
+        settings.transcription.secret_configured = true;
+        settings.transcription.ready = true;
+        settings.minutes.secret_configured = true;
+        settings.minutes.ready = true;
+        settings
+    }
+
+    /// 验证任一服务未配置时不会打开系统文件选择器。
+    #[test]
+    fn blocks_audio_selection_until_both_providers_are_ready() {
+        let mut settings = ready_settings();
+        settings.minutes.ready = false;
+        let error = ensure_audio_selection_ready(&settings).expect_err("block incomplete settings");
+        assert_eq!(error.code, "provider_configuration_required");
+
+        settings.minutes.ready = true;
+        assert!(ensure_audio_selection_ready(&settings).is_ok());
+    }
 
     /// 验证与活动任务共用 ID 的重复候选不会再暴露可释放 artifact。
     #[test]

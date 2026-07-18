@@ -10,7 +10,7 @@
 本计划用于验证 MVP 主链路：
 
 ```text
-单个/批量离线音频导入 -> preflight/staging -> mock 转写 -> Schema-valid 纪要
+单个/批量离线音视频导入 -> preflight/staging -> 内部测试转写 -> Schema-valid 纪要
 -> SQLite -> 页面展示/搜索/复制 -> UTF-8 Markdown 导出
 ```
 
@@ -30,11 +30,13 @@
 
 - 直接审查前端、Rust、配置、Tauri capability、Provider、ingest、SQLite 与 mock 实现。
 - `pnpm typecheck`：退出码 0。
-- `pnpm test -- --run`：退出码 0；2 个 test files、12 个 tests 全部通过，包括配置引导、11 模板和 StrictMode Markdown 预览回归。
-- `cargo test --manifest-path .\src-tauri\Cargo.toml --all-targets --all-features`：退出码 0；最终 74 个 Rust tests 全部通过。仓库本地真实 MP3 导入用例实际执行通过。
+- `pnpm test`：退出码 0；3 个 test files、19 个 tests 全部通过，包括配置引导、音视频批量入口、自动更新、11 模板和 StrictMode Markdown 预览回归。
+- `cargo test --manifest-path .\src-tauri\Cargo.toml --all-targets --all-features`：退出码 0；最终 96 个 Rust tests 全部通过。仓库本地真实 MP3、MP4/MOV 结构夹具和无音轨拒绝用例实际执行通过。
+- `MEETING_DESK_TEST_VIDEO=<仓库外生成文件>` 定向测试：退出码 0；FFmpeg 生成的 1 秒 H.264 + AAC MP4 经 `ffprobe` 确认为视频轨 + 音频轨，并通过真实 importer；文件未进入仓库。
 - `cargo clippy --manifest-path .\src-tauri\Cargo.toml --all-targets --all-features -- -D warnings`：退出码 0。
 - `pnpm build`：退出码 0；Vite 生产构建成功，最终主 JS 约 245 kB、gzip 约 76 kB。
-- `pnpm tauri:build`：配置引导、模板和 Markdown 预览集成后退出码 0，约 68.9 秒；release exe 12,396,032 bytes，NSIS 安装器 3,272,849 bytes。
+- `pnpm tauri:build`：退出码 0，使用无私钥 CI 配置生成 0.2.0 release exe 和 NSIS 安装器；应用实际启动 5 秒保持运行。
+- `pnpm tauri:build:release`：退出码 0，使用仓库外无密码 updater 私钥生成 4,273,464-byte NSIS 安装器和 424-byte `.sig`；GitHub Actions Secret 已配置。安装器 Authenticode 状态仍为 `NotSigned`。
 - `cargo fmt --check --manifest-path .\src-tauri\Cargo.toml`：退出码 0。
 - `pnpm test:integration`：退出码 0；1 个直接 Rust 集成用例通过，覆盖合成 WAV -> ingest -> MockProvider -> 纪要校验 -> 内存 SQLite -> staging 清理。
 - `pnpm audit --prod --registry=https://registry.npmjs.org`：退出码 0，未报告已知生产依赖漏洞。默认 npm 镜像缺少 audit endpoint；`cargo-audit` 未安装。
@@ -46,33 +48,34 @@
 | 项目 | 当前状态 | 真实结果/下一步 |
 | --- | --- | --- |
 | TypeScript 类型检查 | `PASS` | `tsc --noEmit` 通过 |
-| 前端组件/Mock 测试 | `PASS` | 12/12 通过；只覆盖浏览器 mock，不代表 Tauri desktop client |
-| Rust 单元测试 | `PASS` | 74/74 通过，新增 Provider 就绪状态、11 模板注册表、自适应 Prompt，并继续覆盖重试上限与取消终态 |
+| 前端组件/测试客户端 | `PASS` | 19/19 通过；含 updater 和视频批量入口，只覆盖浏览器测试客户端，不代表 Tauri desktop client |
+| Rust 单元测试 | `PASS` | 96/96 通过，含 MP4/MOV、无音轨视频、Provider 就绪状态、11 模板注册表、自适应 Prompt，并继续覆盖重试上限与取消终态 |
 | Rust clippy | `PASS` | `-D warnings` 通过 |
 | Rust format | `PASS` | `cargo fmt --check` 通过 |
 | 前端生产构建 | `PASS` | Vite build 成功 |
-| Tauri release/NSIS | `PASS` | 构建成功；尚未安装、启动或卸载实测 |
+| Tauri release/NSIS | `PASS` | 无私钥 CI 构建与签名 Release 构建均成功，release exe 启动通过；尚未安装或卸载实测 |
 | 独立集成测试 | `PARTIAL` | 脚本存在且 1/1 通过；直接调用 Rust、内存 SQLite，不是 Tauri IPC/UI 或磁盘重启 E2E |
 | 桌面 mock E2E | `PARTIAL` | 前端 15 个命令已全部注册；浏览器已实测配置引导、11 模板和 Markdown 预览，尚未在真实 WebView/IPC 跑完整闭环 |
 | Credential Manager 实测 | `NOT RUN` | 空 Key 删除缺陷已在代码层修复；尚无 Windows Credential Manager/IPC/重启回归 |
 | Windows 文件对话框/拖放 | `PARTIAL` | 裸路径拖放命令已移除，桌面只支持系统选择器；原生对话框、只读/锁定文件未手测 |
 | SQLite 重启恢复 | `PARTIAL` | 活动态/CancelRequested 恢复、重试上限有内存测试；系统对话框重选已接回原任务，但磁盘库/WAL、历史重启和真实 IPC 重选未验 |
 | 真实 Provider | `BLOCKED` | 字段/adapter 未验证；历史测试密钥轮换未确认 |
-| Git diff/历史审查 | `BLOCKED` | `.git` 存在但提交数为 0，全部项目文件未跟踪 |
+| Git diff/历史审查 | `PASS` | 已存在远端基线提交；本轮执行 `git diff --check`、变更统计、跟踪文件与高置信度 secret scan |
 | Windows 安装权限 | `NOT RUN` | 安装器未签名，未实测 UAC、安装模式、ACL、SmartScreen 和卸载残留 |
 
 ### 2.3 已证实覆盖与覆盖缺口
 
 | 领域 | 已证实 | 尚未证实/缺口 |
 | --- | --- | --- |
-| Ingest | synthetic WAV/MP3/M4A、真实本地 MP3、零字节、损坏、扩展/容器不符、大小限制、批量部分失败、流式 hash 去重、源内容不变、`.part` 失败清理、显式 release、成功终态清理、启动清理 | 原生对话框、只读/锁定/消失/替换竞态、复制中取消、cleanup_pending、多残留部分失败、卸载残留 |
+| Ingest | synthetic WAV/MP3/M4A、带音轨 MP4/MOV、无音轨 MP4、真实本地 MP3、零字节、损坏、扩展/容器不符、大小限制、批量部分失败、流式 hash 去重、源内容不变、`.part` 失败清理、显式 release、成功终态清理、启动清理 | 真实长视频、原生对话框、只读/锁定/消失/替换竞态、复制中取消、cleanup_pending、多残留部分失败、卸载残留 |
 | Provider | mock success/空 transcript/可取消 delay；401 终止、429 重试、5xx 有界重试、pre-send 网络重试、unknown outcome 重放拒绝、malformed response、Debug secret redaction | 403/413、response too large、真实 reqwest timeout/TLS、真实 Provider、远端取消、完整 task orchestrator |
 | Secret | 前端 mock 测试验证输入清空/不回显；Credential wrapper Debug redaction；空 Key 后端忽略；`.env.example` 空值 | Windows Credential Manager 写/读/替换/删除/重启；IPC/内存生命周期；旧 Key 轮换 |
 | SQLite | 参数化 CRUD、转写/纪要事务、级联删除的内存测试 | 磁盘库、WAL/SHM、ACL、损坏/磁盘满、重启恢复、受管 artifact 联动删除 |
-| UI | 导入空态、部分错误、任务取消确认、重新选择、详情/复制、设置 mock、无采集 UI | Tauri command 集成、真实错误码、导出、持久化重启、键盘/缩放/高对比度 |
-| 配置引导 | 双 Mock、单侧缺失、两侧真实就绪、打开设置、明确进入 Mock 体验 | Windows Credential Manager 重启后就绪状态与真实 Provider 契约验证 |
+| UI | 导入空态、未配置时禁用媒体、音频/视频批量列表、部分错误、任务取消确认、重新选择、详情/复制、无采集 UI | Tauri command 集成、真实错误码、导出、持久化重启、键盘/缩放/高对比度 |
+| 配置引导 | 单侧缺失、两侧真实就绪、打开设置、DeepSeek/百炼/第三方兼容切换 | Windows Credential Manager 重启后就绪状态与真实 Provider 契约验证 |
 | Markdown 预览 | 后端预览与导出共用渲染器、标题/列表/表格/逐字稿、禁用 raw HTML | 超长逐字稿渲染性能、复制选择和打印布局 |
 | Packaging | release exe 与 NSIS 成功；bundle 未发现明显敏感附带文件 | 实际安装/启动/卸载、签名、UAC/权限、WebView2 缺失、SmartScreen/EDR |
+| Updater | 前端静默检查/发现版本/下载进度/重启组件测试；Tauri 公钥、固定 GitHub endpoint、最小 capability；CI 与标签发布工作流 | 从已安装旧版到 GitHub Release 新版的真实升级、代理/断网/损坏签名回归 |
 
 ### 2.4 Lead 必须关闭的测试门槛
 
@@ -95,7 +98,7 @@
 | Contract | mock/codec、JSON Schema、IPC DTO、Markdown 格式 | Rust integration + shared fixtures | Agent 4/5 + Lead |
 | 集成 | task orchestrator、SQLite、mock provider、取消/重启/删除 | 临时 app-data + mock clock/server | Lead |
 | 桌面 E2E | Tauri UI 到 Rust command 的完整闭环 | Tauri/WebDriver 或受控桌面测试；不足处手测 | Lead + Agent 6 |
-| Windows 实机 | 系统文件对话框、WAV/MP3/M4A 导入、只读源文件、锁定/移动文件、安装包 | Windows 11 x64 手工验收 + 工具校验 | Lead + Agent 6 |
+| Windows 实机 | 系统文件对话框、WAV/MP3/M4A/MP4/MOV 导入、只读源文件、锁定/移动文件、安装包、自动更新 | Windows 11 x64 手工验收 + 工具校验 | Lead + Agent 6 |
 | 安全 | secret/正文扫描、capabilities、ACL、路径、日志、供应链 | 静态扫描 + sentinel + PowerShell ACL/文件检查 | Agent 6 + Reviewer |
 | 独立审查 | diff、核心流程、安全、并发、构建、测试质量 | Reviewer 直接看代码并运行关键命令 | Phase 6 Reviewer |
 
@@ -109,7 +112,7 @@
 | Rust stable `x86_64-pc-windows-msvc` | Rust/Tauri 构建 | 必测 |
 | 项目锁定的 pnpm 与 Node 版本 | 前端构建/测试 | 必测；版本写入 `packageManager`/README |
 | WebView2 Evergreen 当前企业支持版本 | UI 运行 | 必测 |
-| WAV、MP3、M4A 各一份非敏感样例 | 格式与批量导入 | 必测；真实 Provider 未验证前只证明本地 preflight/mock 流程 |
+| WAV、MP3、M4A、MP4、MOV 各一份非敏感样例 | 格式与批量导入 | 必测；视频同时准备“有音轨”和“无音轨”样例；真实 Provider 未验证前只证明本地 preflight/内部测试流程 |
 | 只读、锁定、移动/删除中的测试文件 | 外部源保护与竞态 | 必测；只在隔离测试目录操作 |
 | 无网络/受控 mock server | 失败、重试、取消 | 必测 |
 
@@ -149,7 +152,7 @@
 - mock provider success 与主要失败场景可编译、可测试、可取消。
 - 配置校验、统一错误、日志白名单、最小 Tauri capability/CSP 有基线。
 - 根目录提供 PowerShell 兼容的统一脚本；类型检查、单元测试和开发/release build 实际运行。
-- 离线文件导入 PoC 必须证明 WAV/MP3/M4A 的系统文件选择、preflight、只读源保护、staging 与取消清理；失败项给出 Go/BLOCKED 结果。
+- 离线文件导入 PoC 必须证明 WAV/MP3/M4A/MP4/MOV 的系统文件选择、preflight、只读源保护、staging 与取消清理；失败项给出 Go/BLOCKED 结果。
 
 ### Phase 2：模块
 
@@ -180,7 +183,7 @@
 
 | ID | 场景 | 层级 | 关键步骤 | 预期 |
 | --- | --- | --- | --- | --- |
-| `BOOT-001` | 无 Key 首次启动 | E2E/手工 | 清空测试 app-data，启动应用 | 启动成功；历史为空；设置和 mock 可用；无错误泄露 |
+| `BOOT-001` | 无 Key 首次启动 | E2E/手工 | 清空测试 app-data，启动应用 | 启动成功；历史为空；设置可用；音频选择禁用；无错误泄露 |
 | `BOOT-002` | app-data 不可写 | 集成/手工 | 使用受控只读目录或注入存储失败 | 安全错误；不崩溃；不谎报已保存 |
 | `UI-001` | 基础路由 | 组件/E2E | 依次进入会议、导入、任务、设置 | 页面稳定；焦点移到标题；无网络请求 |
 | `UI-002` | 加载/空/错误状态 | 组件 | 为每页注入三类状态 | 对应内容清楚；导航仍可使用 |
@@ -196,7 +199,7 @@
 
 | ID | 场景 | 层级 | 关键步骤 | 预期 |
 | --- | --- | --- | --- | --- |
-| `IMP-001` | 单文件导入 | 集成/E2E | 通过系统对话框选择受支持的 WAV、MP3、M4A | preflight 后创建一个任务；前端只获得安全元数据 |
+| `IMP-001` | 单文件导入 | 集成/E2E | 通过系统对话框选择受支持的 WAV、MP3、M4A、MP4、MOV | preflight 后创建一个任务；前端只获得安全元数据 |
 | `IMP-002` | 批量导入部分失败 | 集成/E2E | 混合合法、空、损坏、超大和不支持格式文件 | 合法文件继续；失败逐项显示；批次不假装全成/全败 |
 | `IMP-003` | 多次追加累计超限 | Rust 单元/集成 | 分多次选择后累计超过批次文件数或总大小限制 | 提交边界按完整逻辑批次拒绝，不启动任何子任务 |
 | `IMP-004` | 活动任务重复导入 | Rust 单元/集成 | 正在处理的 artifact 再次被选择并移除候选 | 重复项不可提交且不暴露可释放 artifact ID；活动任务文件保持可用 |
@@ -208,7 +211,7 @@
 | `IMP-008` | 重复导入/重复点击 | 集成 | 同一 artifact/config 并发提交 | 返回同一活动 task；只发一个 operation |
 | `IMP-009` | 用户源文件只读保护 | 集成/手工 | 对只读源执行处理、取消、删除会议和全部清理 | 流程不要求写源文件；外部源不被修改、移动或删除 |
 | `IMP-010` | 本地真实 MP3 + mock | E2E | 以相对路径/显式配置导入仓库测试资产 | artifact 验证和完整闭环成功；日志/报告不含原文 |
-| `IMP-011` | WAV/MP3/M4A 格式矩阵 | Contract/集成 | 对每种格式执行容器、MIME、时长与 Provider capability preflight | 支持能力来自 adapter；不支持格式在上传前拒绝 |
+| `IMP-011` | WAV/MP3/M4A/MP4/MOV 格式矩阵 | Contract/集成 | 对每种格式执行容器、音轨、MIME、时长与 Provider capability preflight | 支持能力来自 adapter；不支持格式和无音轨视频在上传前拒绝 |
 | `IMP-012` | 文件选择取消 | 组件/E2E | 关闭系统文件对话框 | 不创建 artifact/task；不显示失败 Toast |
 | `IMP-013` | 无法读取/被锁定文件 | 集成/手工 | 选择无读取权限或被独占锁定的测试文件 | 安全错误；无 staging/task；绝对路径不进日志 |
 | `IMP-014` | preflight 后源文件被替换 | 并发集成 | 预检后、上传前替换内容或改变大小/时间 | 身份复核失败；不上传已变化文件；提示重新选择 |
@@ -305,7 +308,7 @@
 | ID | 场景 | 方法 | 通过标准 |
 | --- | --- | --- | --- |
 | `SEC-001` | 当前仓库 secret scan | 只输出文件名的高置信度扫描 + 人工配置审查 | 无真实 Key/Token/Cookie/内部地址；例外均为明确无效 sentinel |
-| `SEC-002` | Git 历史扫描 | 扫描 refs、objects、diff | 当前提交数为 0，无法形成历史/diff 证据；建立基线提交后重跑 |
+| `SEC-002` | Git 历史扫描 | 扫描 refs、objects、diff | 基线提交存在；本轮提交前扫描当前 diff 与将要跟踪的文件，未把 updater 私钥、API Key 或媒体文件纳入提交 |
 | `SEC-003` | 已暴露 Key 轮换 | 供应商侧不含值的确认 | 旧值失效后才可关闭，不通过“文件已删”关闭 |
 | `LOG-001` | secret sentinel | 跑全部 mock 错误并扫描 stdout/stderr/log/report/snapshot | sentinel 原值与 Authorization 不出现 |
 | `LOG-002` | transcript sentinel | 跑转写、Schema 失败、panic/error paths | 普通日志、错误、IPC event、报告无正文 |
@@ -362,20 +365,20 @@ cargo test --manifest-path .\src-tauri\Cargo.toml --all-targets
 | `PKG-005` | WebView2 缺失/离线 | 安装器按选择的 bootstrapper/offline 策略给明确错误或完成安装 |
 | `PKG-006` | Unicode/空格用户路径 | 安装、文件导入、DB、导出正常 |
 | `PKG-007` | Windows Defender/SmartScreen | 记录事实结果；未签名警告列为已知限制，不伪称可信发布 |
-| `PKG-008` | 依赖开发机 ffmpeg | 在无 ffmpeg PATH 的干净环境运行 | WAV/MP3/M4A 导入按声明能力工作；若需要 codec，依赖必须随包明确提供 |
+| `PKG-008` | 依赖开发机 ffmpeg | 在无 ffmpeg PATH 的干净环境运行 | WAV/MP3/M4A/MP4/MOV 导入按声明能力工作；当前实现不得调用外部 ffmpeg |
 
 ### 9.3 Windows 手工验收清单
 
 每次记录测试日期、应用 build/commit、Windows build、样例格式与来源类型（不记录敏感文件名/路径）、操作人、结果、证据位置和问题 ID。
 
-- [ ] 无 API Key 启动，进入会议记录、导入、任务、设置；mock 模式可选。
-- [ ] 通过系统文件对话框分别导入非敏感 WAV、MP3、M4A，preflight 结果与声明能力一致。
+- [x] 无 API Key 启动，进入导入和设置；音频选择保持禁用并显示双服务配置引导（浏览器实测）。
+- [ ] 通过系统文件对话框分别导入非敏感 WAV、MP3、M4A、MP4、MOV，preflight 结果与声明能力一致。
 - [ ] 批量选择合法、零字节、损坏、超大和不支持格式文件，单个失败不阻塞其他任务。
 - [ ] 只读外部源可处理；处理、取消、删除会议和清理数据都不修改、移动或删除源文件。
 - [ ] 文件无读取权限、被独占锁定、preflight 后被替换或消失时显示安全错误，不崩溃、不上传错误内容。
 - [ ] staging copy 正常、磁盘写失败、复制中取消和程序退出后的残留状态均与实际文件一致。
 - [ ] hash/preflight 使用有界流式 I/O；路径、hash、音频内容不进入 UI、日志或测试报告。
-- [ ] mock success 完整跑通保存、详情、搜索、复制和 Markdown 导出。
+- [ ] 内部测试链路完整跑通保存、详情、搜索、复制和 Markdown 导出（仍需真实 Tauri WebView/IPC 实测）。
 - [ ] 断网、connect/request/overall timeout、401、429、500 页面行为与重试次数正确。
 - [ ] staging/上传/等待/转写/总结阶段取消，最终 cancelled；late success 不出现。
 - [ ] 快速重复提交只产生一个活动任务。
@@ -417,7 +420,7 @@ cargo test --manifest-path .\src-tauri\Cargo.toml --all-targets
 | 级别 | 示例 | 发布规则 |
 | --- | --- | --- |
 | Blocker/Critical | Key/原文泄露；任意文件删除；取消后写入完成；数据库静默丢失；安装包无法启动 | 必须修复并复测；不得发布 |
-| High | WAV/MP3/M4A 导入或 preflight 主路径失败；外部源被修改；401 无限重试；重复提交；历史重启不可读；Schema 绕过 | MVP 不得宣布完成 |
+| High | WAV/MP3/M4A/MP4/MOV 导入或 preflight 主路径失败；外部源被修改；401 无限重试；重复提交；历史重启不可读；Schema 绕过 | MVP 不得宣布完成 |
 | Medium | 单个错误状态不清晰；删除残留可恢复但提示不足；特定文件来源/同步目录兼容问题 | 评估修复；若接受必须写已知限制 |
 | Low | 非核心文案、轻微视觉偏差 | 可排期，不影响核心隐私/正确性 |
 

@@ -162,6 +162,7 @@ export type ProviderPresetId =
   | "dashscope_funasr_cn"
   | "dashscope_funasr_intl"
   | "deepseek"
+  | "aliyun_bailian"
   | "custom_openai_compatible";
 
 export interface PublicProviderSettings {

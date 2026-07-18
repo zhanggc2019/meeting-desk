@@ -1,0 +1,64 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Frontend checks
+        run: |
+          pnpm typecheck
+          pnpm test
+
+      - name: Rust checks
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+          cargo test --manifest-path src-tauri/Cargo.toml --all-targets --all-features
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Build Windows installer
+        run: pnpm tauri:build:ci
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: meeting-desk-windows-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/meeting-desk.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe

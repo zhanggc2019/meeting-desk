@@ -1,8 +1,8 @@
-# 离线音频导入与校验可行性
+# 离线音视频导入与校验可行性
 
 > 状态：Phase 0 设计结论，不代表导入功能已经实现
 > 日期：2026-07-17
-> 适用范围：Windows 11 x64；只处理用户已存在的本地 WAV、MP3、M4A 文件
+> 适用范围：Windows 11 x64；只处理用户已存在的本地 WAV、MP3、M4A、MP4、MOV 文件
 > 本文不定义任何真实 Provider 的私有 HTTP 字段；Provider 契约以 [API 契约](./api-contract.md) 为准。
 
 ## 1. 结论与范围
@@ -11,7 +11,7 @@
 
 MVP 建议：
 
-- 使用 Tauri 官方 dialog plugin 提供 Windows 原生单选/多选文件对话框，过滤器提示 `wav`、`mp3`、`m4a`。官方文档确认 `multiple` 控制多选，且 Windows 返回文件系统路径。[Tauri Dialog](https://v2.tauri.app/plugin/dialog/)
+- 使用 Tauri 官方 dialog plugin 提供 Windows 原生单选/多选文件对话框，过滤器提示 `wav`、`mp3`、`m4a`、`mp4`、`mov`。官方文档确认 `multiple` 控制多选，且 Windows 返回文件系统路径。[Tauri Dialog](https://v2.tauri.app/plugin/dialog/)
 - 文件对话框由 Rust Core 发起或由 Lead 提供一次性受控导入句柄；前端不获得可长期复用的任意文件读取能力。
 - 用户源文件始终只读。应用处理的是复制到 app-local-data 下的受管 staging 副本，取消、失败、删除会议均不得修改或删除外部源文件。
 - 扩展名和 Windows MIME 只作为提示。最终格式由文件头、容器结构、音频轨和解码检查共同判定。
@@ -62,7 +62,7 @@ MVP 建议：
 | 3. 容器/音轨 | demux、至少一个 audio track、codec/sample rate/channels/duration 合理 | 获得可信技术元数据，拒绝无音轨或结构损坏 |
 | 4. 解码 | 流式解码完整音频轨并丢弃样本；内存有界且可取消 | 捕获后段截断、无可解码帧和潜在损坏 |
 
-只读取一个 magic number 无法证明压缩音频完整可用。MVP 选择完整流式解码检查，是为了在上传前确定 WAV/MP3/M4A 的主音轨可读；它增加本地 CPU/I/O，但不保存解码 PCM，也不把内容传给 WebView。长文件验证必须显示真实阶段并可取消。
+只读取一个 magic number 无法证明压缩媒体完整可用。当前实现对 WAV、MP3 和 ISO BMFF 执行有界结构校验；MP4/MOV 还会遍历 `moov/trak/mdia/minf/stbl/stsd`，要求恰有一条 AAC 或 ALAC 音轨。当前并未完整解码整个文件，因此后段码流损坏仍可能由云端 Provider 才发现，这是已知限制。
 
 若完整解码成本在 Phase 1 soak 中不可接受，可把“快速 probe + 后台完整校验”拆为两个阶段，但 `ready` 只能在完整校验通过后出现。
 
@@ -73,11 +73,13 @@ MVP 建议：
 | WAV | `.wav`，大小写不敏感 | `RIFF....WAVE`；`RF64` 仅在解析器实测支持后开放 | RIFF/WAVE + PCM；其他 WAV codec 需 capability 和 decoder 证据 | `audio/wav` |
 | MP3 | `.mp3` | `ID3` 或 MPEG audio frame sync；单独 `ID3` 头不算有效音频 | MPEG audio + MP3，至少一个可解码 frame | `audio/mpeg` |
 | M4A | `.m4a` | ISO BMFF box，常见 `ftyp`；不能只匹配某一个 brand | ISO/MP4 + AAC-LC 或 ALAC | `audio/mp4` |
+| MP4 | `.mp4` | ISO BMFF `ftyp`/`mdat`/`moov` | 视频轨可选；必须恰有一条 AAC 或 ALAC 音轨 | `video/mp4` |
+| MOV | `.mov` | ISO BMFF/QuickTime `ftyp`/`mdat`/`moov` | 视频轨可选；必须恰有一条 AAC 或 ALAC 音轨 | `video/quicktime` |
 
 规则：
 
 - 扩展名与探测容器不匹配时返回 `extension_content_mismatch`，不静默改名上传。
-- 容器受支持但 codec 不在允许矩阵时返回 `unsupported_audio`，例如视频-only MP4、未知 WAV codec。
+- 容器受支持但 codec 不在允许矩阵时返回 `unsupported_audio`；视频没有音轨时返回 `missing_audio_track`。
 - M4A 是容器习惯扩展名，不等于 codec；必须分别记录 container 与 codec。
 - MIME 是应用内部规范值；真实 adapter 如需不同 wire `Content-Type`，由经验证的 adapter 映射，不能污染导入模块。
 - 只使用主音频轨。多音轨选择策略不是 Phase 0 已解决事实；MVP 可明确拒绝多音轨并返回 `unsupported_audio_tracks`，避免静默选错会议语言/轨道。

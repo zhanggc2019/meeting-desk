@@ -1,5 +1,5 @@
-import { CircleAlert, FileAudio, FlaskConical, FolderOpen, Plus, Settings2, Trash2, UploadCloud, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { FileAudio, FileVideo2, FolderOpen, Plus, Settings2, Trash2, UploadCloud, X } from "lucide-react";
+import { useEffect, useMemo, useState, type ChangeEvent, type DragEvent } from "react";
 import type { ImportCandidate, ImportMode, MinutesTemplate, ProcessingTask, PublicProviderSettings, PublicSettings } from "../../contracts/desktop";
 import { useDesktopClient } from "../../services/DesktopClientContext";
 import { getSafeErrorMessage } from "../../services/desktopClient";
@@ -27,11 +27,16 @@ function hasCompleteRealProviderConfig(provider: PublicProviderSettings): boolea
 /** 返回不暴露敏感配置的 Provider 状态文案。 */
 function getProviderStatusCopy(provider: PublicProviderSettings): string {
   if (hasCompleteRealProviderConfig(provider)) return "真实服务配置已填写";
-  if (provider.kind === "mock") return "当前为 Mock 演示模式";
+  if (provider.kind === "mock") return "旧版演示配置已停用，请重新配置";
   return provider.validationMessage?.trim() || "配置不完整，请检查地址、模型和密钥";
 }
 
-/** 渲染单文件和批量文件共用的离线音频工作台。 */
+/** 判断安全显示元数据是否表示视频文件。 */
+function isVideoFile(name: string, mimeType?: string | null): boolean {
+  return mimeType?.startsWith("video/") === true || /\.(mp4|mov)$/i.test(name);
+}
+
+/** 渲染单文件和批量文件共用的离线媒体工作台。 */
 export function WorkspacePage() {
   const client = useDesktopClient();
   const navigate = useAppStore((state) => state.navigate);
@@ -44,12 +49,10 @@ export function WorkspacePage() {
   const [selectedTemplate, setSelectedTemplate] = useState("adaptive");
   const [recentTasks, setRecentTasks] = useState<ProcessingTask[]>([]);
   const [settings, setSettings] = useState<PublicSettings | null>(null);
-  const [mockConsent, setMockConsent] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isSelecting, setIsSelecting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const readyCandidates = useMemo(
     () => candidates.filter((candidate) => candidate.validationStatus === "ready" && candidate.artifactId),
@@ -72,18 +75,15 @@ export function WorkspacePage() {
   );
 
   const providerSetup = useMemo(() => {
-    if (!settings) return { complete: false, mockAvailable: false };
-    return {
-      complete: hasCompleteRealProviderConfig(settings.transcription) && hasCompleteRealProviderConfig(settings.minutes),
-      mockAvailable: settings.transcription.kind === "mock" && settings.minutes.kind === "mock",
-    };
+    if (!settings) return { complete: false };
+    return { complete: hasCompleteRealProviderConfig(settings.transcription) && hasCompleteRealProviderConfig(settings.minutes) };
   }, [settings]);
 
-  const canProcess = providerSetup.complete || (providerSetup.mockAvailable && mockConsent);
+  const canProcess = providerSetup.complete;
+  const canSelectMedia = settings !== null && providerSetup.complete;
 
   useEffect(() => {
     let active = true;
-    setMockConsent(false);
     Promise.all([client.listMinutesTemplates(), client.listProcessingTasks({ filter: "all" }), client.getPublicSettings()])
       .then(([availableTemplates, tasks, publicSettings]) => {
         if (!active) return;
@@ -116,6 +116,10 @@ export function WorkspacePage() {
 
   /** 使用桌面服务按当前导入模式打开系统文件选择器。 */
   async function handleSelectFiles() {
+    if (!canSelectMedia) {
+      setError("请先完成语音转写和会议纪要服务配置，再选择音频或视频");
+      return;
+    }
     setIsSelecting(true);
     setError(null);
     try {
@@ -128,8 +132,13 @@ export function WorkspacePage() {
     }
   }
 
-  /** 在浏览器 Mock 环境中校验通过 input 选择的文件。 */
+  /** 在浏览器测试环境中校验通过 input 选择的文件。 */
   async function handleBrowserFiles(event: ChangeEvent<HTMLInputElement>) {
+    if (!canSelectMedia) {
+      event.target.value = "";
+      setError("请先完成语音转写和会议纪要服务配置，再选择音频或视频");
+      return;
+    }
     const files = Array.from(event.target.files ?? []);
     if (files.length === 0) return;
     setError(null);
@@ -143,13 +152,17 @@ export function WorkspacePage() {
     }
   }
 
-  /** 处理浏览器 Mock 中的文件拖放；桌面端只使用系统文件选择器。 */
+  /** 处理浏览器测试中的文件拖放；桌面端只使用系统文件选择器。 */
   async function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     setIsDragging(false);
+    if (!canSelectMedia) {
+      setError("请先完成语音转写和会议纪要服务配置，再选择音频或视频");
+      return;
+    }
     const files = Array.from(event.dataTransfer.files);
     if (files.length === 0) {
-      setError("未检测到可处理的音频文件");
+      setError("未检测到可处理的音频或视频文件");
       return;
     }
     if (importMode === "single" && (files.length > 1 || candidates.length > 0)) {
@@ -197,7 +210,7 @@ export function WorkspacePage() {
     const artifactIds = readyCandidates.flatMap((candidate) => candidate.artifactId ? [candidate.artifactId] : []);
     if (artifactIds.length === 0 || isSubmitting) return;
     if (!canProcess) {
-      setError("请先配置真实转写和纪要服务，或明确选择 Mock 体验");
+      setError("请先完成语音转写和会议纪要服务配置");
       return;
     }
     setIsSubmitting(true);
@@ -217,21 +230,19 @@ export function WorkspacePage() {
     <div className="page workspace-page">
       <header className="page-header">
         <div>
-          <span className="eyebrow">离线音频</span>
+          <span className="eyebrow">离线媒体</span>
           <h1 tabIndex={-1}>转写工作台</h1>
-          <p>选择一个或多个本地音频文件，生成逐字稿和结构化会议纪要。</p>
+          <p>选择一个或多个本地音频或视频文件，生成逐字稿和结构化会议纪要。</p>
         </div>
         <button className="button secondary" type="button" onClick={() => navigate("tasks")}>查看任务队列</button>
       </header>
 
       {!providerSetup.complete && settings ? (
-        <section className={`setup-guide${mockConsent ? " mock-enabled" : ""}`} aria-labelledby="setup-title">
+        <section className="setup-guide" aria-labelledby="setup-title">
           <div className="setup-guide-copy">
             <span className="eyebrow">首次使用设置</span>
-            <h2 id="setup-title">{mockConsent ? "当前使用 Mock 体验" : "开始前，请先连接两项服务"}</h2>
-            <p>{mockConsent
-              ? "Mock 只生成固定演示数据，不会调用 FunASR 或大模型，也不代表真实接口已配置。"
-              : "真实处理需要分别配置音频转写接口和纪要生成接口；两项配置完整后可提交任务，实际连通性以连接测试为准。"}</p>
+            <h2 id="setup-title">开始前，请先连接两项服务</h2>
+            <p>完成语音转写和纪要生成服务配置后，才可以选择本地媒体；实际连通性以连接测试结果为准。</p>
           </div>
           <div className="setup-checklist" aria-label="服务配置状态">
             <div>
@@ -245,13 +256,7 @@ export function WorkspacePage() {
           </div>
           <div className="setup-actions">
             <button className="button primary" type="button" onClick={openSettings}><Settings2 size={16} aria-hidden="true" />打开服务设置</button>
-            {providerSetup.mockAvailable ? (
-              <button className="button secondary" type="button" disabled={mockConsent} onClick={() => setMockConsent(true)}>
-                <FlaskConical size={16} aria-hidden="true" />{mockConsent ? "Mock 体验已启用" : "使用 Mock 体验"}
-              </button>
-            ) : null}
           </div>
-          {!providerSetup.mockAvailable ? <div className="setup-warning"><CircleAlert size={15} aria-hidden="true" />两项服务需使用同一运行模式，当前配置无法提交任务。</div> : null}
         </section>
       ) : null}
 
@@ -275,7 +280,7 @@ export function WorkspacePage() {
             onClick={() => setImportMode("single")}
           >
             <strong>单个文件</strong>
-            <small>一次处理 1 个录音</small>
+            <small>一次处理 1 个录音或视频</small>
           </button>
           <button
             className={`import-mode-option${importMode === "batch" ? " is-active" : ""}`}
@@ -286,38 +291,41 @@ export function WorkspacePage() {
             onClick={() => setImportMode("batch")}
           >
             <strong>批量处理</strong>
-            <small>一次导入多个录音</small>
+            <small>一次导入多个媒体文件</small>
           </button>
         </div>
         {importMode === "batch" ? (
-          <p className="batch-mode-note">每个音频会创建独立任务；单个文件失败不会影响本批次的其他文件。</p>
+          <p className="batch-mode-note">每个媒体文件会创建独立任务；单个文件失败不会影响本批次的其他文件。</p>
         ) : null}
       </section>
 
       <section aria-labelledby="import-title">
         <div
-          className={`file-dropzone${isDragging ? " is-dragging" : ""}`}
+          className={`file-dropzone${isDragging ? " is-dragging" : ""}${canSelectMedia ? "" : " is-disabled"}`}
           aria-labelledby="import-title"
-          onDragEnter={(event) => { event.preventDefault(); setIsDragging(true); }}
+          aria-disabled={!canSelectMedia}
+          onDragEnter={(event) => { event.preventDefault(); if (canSelectMedia) setIsDragging(true); }}
           onDragOver={(event) => event.preventDefault()}
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
         >
           <div className="dropzone-icon" aria-hidden="true"><UploadCloud size={28} strokeWidth={1.6} /></div>
-          <h2 id="import-title">{importMode === "batch" ? "批量添加离线音频" : "选择一个离线音频"}</h2>
-          <p>{importMode === "batch"
+          <h2 id="import-title">{!canSelectMedia ? "配置服务后选择媒体" : importMode === "batch" ? "批量添加离线媒体" : "选择一个离线媒体文件"}</h2>
+          <p>{!canSelectMedia
+            ? "语音转写和会议纪要服务均配置完成后，此处会自动启用。"
+            : importMode === "batch"
             ? "可一次选择多个文件，也可分多次继续添加；源文件只读。"
             : candidates.length > 0
               ? "当前文件已加入列表，移除或清空后可重新选择。"
               : "一次选择一个文件，源文件只读，不会被移动或修改。"}</p>
           <div className="dropzone-actions">
-            <button className="button primary" type="button" onClick={(event) => { event.stopPropagation(); void handleSelectFiles(); }} disabled={isSelecting || (importMode === "single" && candidates.length > 0)}>
+            <button className="button primary" type="button" onClick={(event) => { event.stopPropagation(); void handleSelectFiles(); }} disabled={!canSelectMedia || isSelecting || (importMode === "single" && candidates.length > 0)}>
               <FolderOpen size={17} aria-hidden="true" />
-              {isSelecting ? "正在打开" : importMode === "batch" ? "批量选择音频" : "选择音频文件"}
+              {isSelecting ? "正在打开" : importMode === "batch" ? "批量选择媒体" : "选择音频或视频"}
             </button>
           </div>
-          <input ref={fileInputRef} className="visually-hidden" aria-label={importMode === "batch" ? "批量选择本地音频文件" : "选择本地音频文件"} type="file" accept=".mp3,.wav,.m4a,audio/mpeg,audio/wav,audio/mp4" multiple={importMode === "batch"} onChange={handleBrowserFiles} />
-          <small>支持格式和限制以当前转写服务的校验结果为准</small>
+          <input className="visually-hidden" aria-label={importMode === "batch" ? "批量选择本地媒体文件" : "选择本地媒体文件"} type="file" accept=".mp3,.wav,.m4a,.mp4,.mov,audio/mpeg,audio/wav,audio/mp4,video/mp4,video/quicktime" multiple={importMode === "batch"} disabled={!canSelectMedia} onChange={handleBrowserFiles} />
+          <small>支持 WAV、MP3、M4A、MP4、MOV；视频需包含 AAC 或 ALAC 音轨</small>
         </div>
       </section>
 
@@ -337,7 +345,7 @@ export function WorkspacePage() {
                 </p>
               ) : <p>已选择 1 个文件 · {readyCandidates.length} 个可处理</p>}
             </div>
-            {importMode === "batch" ? <button className="button quiet" type="button" onClick={() => void handleSelectFiles()}><Plus size={16} aria-hidden="true" />继续添加</button> : null}
+            {importMode === "batch" ? <button className="button quiet" type="button" disabled={!canSelectMedia} onClick={() => void handleSelectFiles()}><Plus size={16} aria-hidden="true" />继续添加</button> : null}
           </div>
           <div className="table-wrap">
             <table>
@@ -345,7 +353,7 @@ export function WorkspacePage() {
               <tbody>
                 {candidates.map((candidate) => (
                   <tr key={candidate.id}>
-                    <td><span className="file-name"><FileAudio size={16} aria-hidden="true" />{candidate.displayName}</span></td>
+                    <td><span className="file-name">{isVideoFile(candidate.displayName, candidate.mimeType) ? <FileVideo2 size={16} aria-hidden="true" /> : <FileAudio size={16} aria-hidden="true" />}{candidate.displayName}</span></td>
                     <td>{formatBytes(candidate.sizeBytes)}</td>
                     <td>{formatDuration(candidate.durationMs)}</td>
                     <td><span className={`validation ${candidate.validationStatus}`}>{candidate.safeMessage ?? (candidate.validationStatus === "ready" ? "可处理" : "正在校验")}</span></td>
@@ -384,7 +392,7 @@ export function WorkspacePage() {
           <div className="compact-list">
             {recentTasks.map((task) => (
               <button key={task.id} type="button" className="compact-list-row" onClick={() => navigate("tasks")}>
-                <span className="file-name"><FileAudio size={16} aria-hidden="true" />{task.displayName}</span>
+                <span className="file-name">{isVideoFile(task.displayName) ? <FileVideo2 size={16} aria-hidden="true" /> : <FileAudio size={16} aria-hidden="true" />}{task.displayName}</span>
                 <span className={`status-dot ${task.status}`} aria-hidden="true" />
                 <span>{getTaskStatusLabel(task.status)}</span>
                 <time dateTime={task.updatedAt}>{formatRelativeDate(task.updatedAt)}</time>

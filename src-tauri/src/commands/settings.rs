@@ -1,3 +1,6 @@
+use std::time::Duration;
+
+use reqwest::{redirect::Policy, StatusCode};
 use serde::Deserialize;
 use tauri::State;
 
@@ -50,7 +53,12 @@ enum ProviderTarget {
 /// 返回公开 Provider 配置以及两个 Key 是否已配置。
 #[tauri::command]
 pub fn get_public_settings(state: State<'_, AppState>) -> Result<PublicSettings, CommandError> {
-    let mut settings = load_public_settings(&state)?;
+    load_evaluated_settings(state.inner())
+}
+
+/// 供后端命令复用的公开设置读取入口，会迁移旧配置并重新计算密钥就绪状态。
+pub(crate) fn load_evaluated_settings(state: &AppState) -> Result<PublicSettings, CommandError> {
+    let mut settings = load_public_settings(state)?;
     settings.transcription = migrate_public_provider(
         settings.transcription,
         ProviderTarget::Transcription,
@@ -129,16 +137,16 @@ pub fn delete_provider_secret(kind: String) -> Result<bool, CommandError> {
     Ok(true)
 }
 
-/// 检查 Mock 可用性；真实 Provider 在契约未验证前明确返回阻塞状态。
+/// 使用不含会议正文的无副作用请求检查服务地址可达性和常见认证错误。
 #[tauri::command]
-pub fn test_provider_connection(
+pub async fn test_provider_connection(
     state: State<'_, AppState>,
     target: String,
 ) -> Result<ProviderConnectionResult, CommandError> {
-    let settings = get_public_settings(state)?;
-    let provider = match target.as_str() {
-        "transcription" => settings.transcription,
-        "minutes" => settings.minutes,
+    let settings = load_evaluated_settings(state.inner())?;
+    let (provider, secret_kind) = match target.as_str() {
+        "transcription" => (settings.transcription, SecretKind::Transcription),
+        "minutes" => (settings.minutes, SecretKind::Minutes),
         _ => {
             return Err(CommandError::new(
                 "settings_invalid",
@@ -147,22 +155,75 @@ pub fn test_provider_connection(
             ))
         }
     };
-    if provider.kind == "mock" {
-        return Ok(ProviderConnectionResult {
-            ok: true,
-            safe_message: "Mock Provider 可用".to_string(),
-        });
-    }
-    if !provider.secret_configured {
+    let api_key = secrets::read_secret(secret_kind)
+        .map_err(|_| credential_error())?
+        .filter(|value| !value.trim().is_empty());
+    let Some(api_key) = api_key.filter(|_| provider.secret_configured) else {
         return Ok(ProviderConnectionResult {
             ok: false,
             safe_message: "请先保存 API Key".to_string(),
         });
+    };
+    probe_provider_endpoint(&provider, &api_key).await
+}
+
+/// 对已校验地址发起不携带业务正文的 GET，并禁止重定向与响应正文读取。
+async fn probe_provider_endpoint(
+    provider: &PublicProviderConfig,
+    api_key: &str,
+) -> Result<ProviderConnectionResult, CommandError> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(provider.connect_timeout_ms))
+        .timeout(Duration::from_millis(
+            provider.request_timeout_ms.min(30_000),
+        ))
+        .redirect(Policy::none())
+        .build()
+        .map_err(|_| CommandError::new("connection_test_failed", "无法创建连接测试", true))?;
+    let response = client
+        .get(&provider.endpoint)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(map_connection_probe_error)?;
+    Ok(classify_probe_status(response.status()))
+}
+
+/// 将连接探测网络错误归类为不包含地址、密钥或远端正文的安全提示。
+fn map_connection_probe_error(error: reqwest::Error) -> CommandError {
+    let message = if error.is_timeout() {
+        "连接测试超时，请检查网络、代理或服务地址"
+    } else if error.is_connect() {
+        "无法连接服务，请检查网络、代理或服务地址"
+    } else {
+        "连接测试失败，请稍后重试"
+    };
+    CommandError::new("connection_test_failed", message, true)
+}
+
+/// 只根据 HTTP 状态分类可达性，不读取或展示远端响应正文。
+fn classify_probe_status(status: StatusCode) -> ProviderConnectionResult {
+    let (ok, safe_message) = if status.is_success() || status == StatusCode::METHOD_NOT_ALLOWED {
+        (
+            true,
+            "服务地址可达；本测试不发送音频或提示词，密钥、模型和业务字段将在实际处理时进一步验证",
+        )
+    } else {
+        match status {
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                (false, "服务可达，但 API Key 未通过认证")
+            }
+            StatusCode::NOT_FOUND => (false, "服务可达，但接口路径不存在，请检查服务地址"),
+            StatusCode::TOO_MANY_REQUESTS => (false, "服务可达，但当前触发限流，请稍后重试"),
+            value if value.is_server_error() => (false, "服务可达，但服务端暂时不可用"),
+            value if value.is_redirection() => (false, "服务返回重定向，出于安全原因未继续访问"),
+            _ => (false, "服务已响应，但当前状态无法确认配置有效"),
+        }
+    };
+    ProviderConnectionResult {
+        ok,
+        safe_message: safe_message.to_string(),
     }
-    Ok(ProviderConnectionResult {
-        ok: false,
-        safe_message: "真实 Provider 字段尚未完成最小音频验证，未发送网络请求".to_string(),
-    })
 }
 
 /// 从本地设置读取公开配置，不存在时回退到可由环境变量覆盖的托管默认值。
@@ -182,6 +243,15 @@ fn migrate_public_provider(
     target: ProviderTarget,
     secret_exists: bool,
 ) -> PublicProviderConfig {
+    if provider.preset_id == config::PRESET_MOCK || provider.kind == "mock" {
+        provider.preset_id = match target {
+            ProviderTarget::Transcription => config::PRESET_DASHSCOPE_FUNASR_CN,
+            ProviderTarget::Minutes => config::PRESET_DEEPSEEK,
+        }
+        .to_string();
+        provider.credential_preset_id = None;
+        provider.secret_configured = false;
+    }
     let legacy_without_preset = provider.preset_id.trim().is_empty();
     if legacy_without_preset {
         provider.preset_id = config::infer_preset_id(&provider);
@@ -211,7 +281,6 @@ fn resolve_provider(
         previous_credential_preset_id
     };
     let (kind, endpoint, model) = match preset_id.as_str() {
-        config::PRESET_MOCK => ("mock".to_string(), String::new(), String::new()),
         config::PRESET_DASHSCOPE_FUNASR_CN => (
             "dashscope_funasr".to_string(),
             config::DASHSCOPE_FUNASR_CN_ENDPOINT.to_string(),
@@ -229,6 +298,15 @@ fn resolve_provider(
                 &input.model,
                 &["deepseek-v4-flash", "deepseek-v4-pro"],
                 "deepseek-v4-flash",
+            )?,
+        ),
+        config::PRESET_ALIYUN_BAILIAN => (
+            "openai_compatible".to_string(),
+            config::ALIYUN_BAILIAN_ENDPOINT.to_string(),
+            managed_model(
+                &input.model,
+                &["qwen-plus", "qwen-flash", "qwen-max"],
+                "qwen-plus",
             )?,
         ),
         config::PRESET_CUSTOM_OPENAI => {
@@ -270,11 +348,6 @@ fn resolve_provider(
 /// 将托管预设恢复为后端固定字段，避免旧配置或本地篡改改变供应商地址。
 fn canonicalize_managed_provider(provider: &mut PublicProviderConfig, target: ProviderTarget) {
     match (provider.preset_id.as_str(), target) {
-        (config::PRESET_MOCK, _) => {
-            provider.kind = "mock".to_string();
-            provider.endpoint.clear();
-            provider.model.clear();
-        }
         (config::PRESET_DASHSCOPE_FUNASR_CN, ProviderTarget::Transcription) => {
             provider.kind = "dashscope_funasr".to_string();
             provider.endpoint = config::DASHSCOPE_FUNASR_CN_ENDPOINT.to_string();
@@ -297,6 +370,16 @@ fn canonicalize_managed_provider(provider: &mut PublicProviderConfig, target: Pr
                 "deepseek-v4-flash" | "deepseek-v4-pro"
             ) {
                 provider.model = "deepseek-v4-flash".to_string();
+            }
+        }
+        (config::PRESET_ALIYUN_BAILIAN, ProviderTarget::Minutes) => {
+            provider.kind = "openai_compatible".to_string();
+            provider.endpoint = config::ALIYUN_BAILIAN_ENDPOINT.to_string();
+            if !matches!(
+                provider.model.as_str(),
+                "qwen-plus" | "qwen-flash" | "qwen-max"
+            ) {
+                provider.model = "qwen-plus".to_string();
             }
         }
         (config::PRESET_CUSTOM_OPENAI, _) => {
@@ -335,16 +418,14 @@ fn effective_preset_id(input: &ProviderSettingsInput) -> String {
 fn validate_preset_target(preset_id: &str, target: ProviderTarget) -> Result<(), CommandError> {
     let supported = matches!(
         (preset_id, target),
-        (config::PRESET_MOCK, _)
-            | (
-                config::PRESET_DASHSCOPE_FUNASR_CN,
-                ProviderTarget::Transcription
-            )
-            | (
-                config::PRESET_DASHSCOPE_FUNASR_INTL,
-                ProviderTarget::Transcription
-            )
-            | (config::PRESET_DEEPSEEK, ProviderTarget::Minutes)
+        (
+            config::PRESET_DASHSCOPE_FUNASR_CN,
+            ProviderTarget::Transcription
+        ) | (
+            config::PRESET_DASHSCOPE_FUNASR_INTL,
+            ProviderTarget::Transcription
+        ) | (config::PRESET_DEEPSEEK, ProviderTarget::Minutes)
+            | (config::PRESET_ALIYUN_BAILIAN, ProviderTarget::Minutes)
             | (config::PRESET_CUSTOM_OPENAI, _)
     );
     if supported {
@@ -398,7 +479,7 @@ fn validate_limits(input: &ProviderSettingsInput) -> Result<(), CommandError> {
     Ok(())
 }
 
-/// 仅接受 HTTPS，开发时允许本机回环 HTTP mock server。
+/// 仅接受 HTTPS，开发与自建服务调试时允许本机回环 HTTP 地址。
 fn validate_endpoint(value: &str) -> Result<(), CommandError> {
     let url = reqwest::Url::parse(value.trim())
         .map_err(|_| CommandError::new("settings_invalid", "API 地址格式无效", false))?;
@@ -417,7 +498,7 @@ fn validate_endpoint(value: &str) -> Result<(), CommandError> {
     if url.scheme() != "https" && !(url.scheme() == "http" && localhost) {
         return Err(CommandError::new(
             "settings_invalid",
-            "API 地址必须使用 HTTPS；仅本机 mock 可使用 HTTP",
+            "API 地址必须使用 HTTPS；仅本机回环服务可使用 HTTP",
             false,
         ));
     }
@@ -478,12 +559,24 @@ mod tests {
         assert!(resolve_provider(&input, ProviderTarget::Minutes, None, false).is_err());
     }
 
-    /// 验证本机 HTTP mock server 被允许。
+    /// 验证本机 HTTP 调试服务被允许。
     #[test]
-    fn accepts_local_mock_endpoint() {
+    fn accepts_local_development_endpoint() {
         let mut input = valid_input();
         input.endpoint = "http://127.0.0.1:3000/v1".into();
         assert!(resolve_provider(&input, ProviderTarget::Minutes, None, false).is_ok());
+    }
+
+    /// 验证无正文探测只把成功状态和方法不允许视为服务地址可达。
+    #[test]
+    fn classifies_safe_connection_probe_statuses() {
+        assert!(classify_probe_status(StatusCode::OK).ok);
+        assert!(classify_probe_status(StatusCode::ACCEPTED).ok);
+        assert!(classify_probe_status(StatusCode::METHOD_NOT_ALLOWED).ok);
+        assert!(!classify_probe_status(StatusCode::UNAUTHORIZED).ok);
+        assert!(!classify_probe_status(StatusCode::NOT_FOUND).ok);
+        assert!(!classify_probe_status(StatusCode::TOO_MANY_REQUESTS).ok);
+        assert!(!classify_probe_status(StatusCode::BAD_GATEWAY).ok);
     }
 
     /// 验证保存输入转换后会立即计算公开就绪状态且不会包含 Key。
@@ -551,6 +644,19 @@ mod tests {
         assert_eq!(public.model, "deepseek-v4-flash");
     }
 
+    /// 验证托管百炼预设固定地址并使用稳定的默认模型。
+    #[test]
+    fn managed_aliyun_bailian_uses_fixed_endpoint_and_default_model() {
+        let mut input = valid_input();
+        input.preset_id = config::PRESET_ALIYUN_BAILIAN.to_string();
+        input.endpoint = "https://attacker.example.test/collect".to_string();
+        input.model.clear();
+        let public = resolve_provider(&input, ProviderTarget::Minutes, None, false)
+            .expect("托管百炼输入应使用固定值");
+        assert_eq!(public.endpoint, config::ALIYUN_BAILIAN_ENDPOINT);
+        assert_eq!(public.model, "qwen-plus");
+    }
+
     /// 验证托管预设拒绝白名单外的模型。
     #[test]
     fn managed_presets_reject_unknown_models() {
@@ -563,6 +669,19 @@ mod tests {
         deepseek.preset_id = config::PRESET_DEEPSEEK.to_string();
         deepseek.model = "unknown-llm".to_string();
         assert!(resolve_provider(&deepseek, ProviderTarget::Minutes, None, false).is_err());
+
+        let mut bailian = valid_input();
+        bailian.preset_id = config::PRESET_ALIYUN_BAILIAN.to_string();
+        bailian.model = "unknown-qwen".to_string();
+        assert!(resolve_provider(&bailian, ProviderTarget::Minutes, None, false).is_err());
+    }
+
+    /// 验证正式设置接口不再接受旧版 Mock 预设。
+    #[test]
+    fn rejects_legacy_mock_preset_from_settings_input() {
+        let mut input = valid_input();
+        input.preset_id = config::PRESET_MOCK.to_string();
+        assert!(resolve_provider(&input, ProviderTarget::Minutes, None, false).is_err());
     }
 
     /// 验证切换预设但未输入新 Key 时不会静默复用旧预设凭据。

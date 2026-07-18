@@ -1,22 +1,25 @@
 # 听见纪要
 
-一个小巧的 Windows 离线音频工作台。用户选择本地 WAV、MP3 或 M4A 录音后，应用负责创建转写任务、生成结构化 AI 纪要，并在本地保存、搜索、预览和导出结果。
+一个小巧的 Windows 离线音视频工作台。用户选择本地 WAV、MP3、M4A、MP4 或 MOV 文件后，应用负责创建转写任务、生成结构化 AI 纪要，并在本地保存、搜索、预览和导出结果。
 
 > 本项目只处理用户主动选择的离线文件，不采集麦克风或系统声音。
 
 ## 项目状态
 
-当前版本为 `0.1.0`，适合开发、界面演示和 Mock 全流程验证。
+当前版本为 `0.2.0`，适合桌面界面开发、配置流程验证和本地自动化测试。
 
 - ✅ Tauri 2 桌面壳、React 界面和 SQLite 本地存储可运行。
-- ✅ Mock 流程已贯通：`导入音频 → 转写 → 生成纪要 → 保存 → 展示 → Markdown 预览/导出`。
+- ✅ 内部离线测试链路已贯通：`导入媒体 → 转写 → 生成纪要 → 保存 → 展示 → Markdown 预览/导出`；正式界面不提供演示模式。
 - ✅ 支持单文件和批量处理；批量任务相互独立，单项失败不影响其他文件。
 - ✅ API Key 交由 Windows 凭据管理器保存，不写入前端状态、SQLite 或普通日志。
-- ⚠️ 阿里云百炼 Fun-ASR 与 DeepSeek 的预设界面已完成，但真实 API 互操作仍为 **BLOCKED**。当前版本不会把未验证的真实请求伪装为成功。
+- ✅ 服务未配置完成时会禁用媒体选择，避免创建无法执行的任务。
+- ✅ 支持启动时静默检查 GitHub Release；发现签名更新后由用户确认下载、安装和重启。
+- ✅ GitHub Actions 可在 `main` 分支执行 Windows CI，并在 `v*` 标签上生成签名 NSIS 安装包和 `latest.json`。
+- ⚠️ 阿里云百炼 Fun-ASR、DeepSeek、阿里云百炼通义千问及第三方 OpenAI-compatible 预设已完成，但真实 API 互操作仍为 **BLOCKED**。当前版本不会把未验证的真实请求伪装为成功。
 
 ## 功能
 
-- 导入 WAV、MP3、M4A 离线录音。
+- 导入 WAV、MP3、M4A 音频，以及含 AAC/ALAC 音轨的 MP4、MOV 视频。
 - 在“单个文件”和“批量处理”之间显式切换。
 - 批量追加文件、逐项校验、独立创建任务。
 - 任务状态、取消、失败重试与重启恢复提示。
@@ -36,6 +39,8 @@
   - 文章大纲
   - 自适应模板
 - Provider 预设、模型下拉、超时与重试配置。
+- 桌面端安全连接探测：不发送媒体、提示词或响应正文，可分类认证失败、路径错误、限流、服务端错误和超时。
+- 软件自动更新：只安装由项目更新私钥签名、且来自本仓库 GitHub Release 的更新包。
 
 ## 技术栈
 
@@ -75,7 +80,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-浏览器模式使用确定性前端 Mock，不会调用真实转写或大模型服务。
+浏览器模式使用确定性的本地测试客户端，仅用于界面开发，不会调用真实转写或大模型服务。
 
 启动 Windows 桌面应用：
 
@@ -86,9 +91,9 @@ pnpm tauri:dev
 ## 使用流程
 
 1. 启动应用，按照首页引导打开“服务设置”。
-2. 开发或演示阶段可选择 Mock；真实服务未验证前不会发起真实处理任务。
+2. 在“服务设置”中分别配置 FunASR 和会议纪要服务；两项未就绪前不能选择媒体。
 3. 选择“单个文件”或“批量处理”。
-4. 选择一个或多个本地录音，批量模式下还可以继续追加。
+4. 选择一个或多个本地音频/视频，批量模式下还可以继续追加。
 5. 选择纪要模板并创建任务。
 6. 在任务队列查看每个文件的独立处理状态。
 7. 完成后查看纪要、逐字稿和 Markdown 预览，或导出 `.md` 文件。
@@ -103,9 +108,10 @@ pnpm tauri:dev
 | --- | --- | --- |
 | 语音转写 | 阿里云百炼 Fun-ASR（中国内地 / 国际） | `fun-asr`、`fun-asr-mtl` |
 | 会议纪要 | DeepSeek | `deepseek-v4-flash`、`deepseek-v4-pro` |
-| 开发验证 | Mock | 内置固定结果 |
+| 会议纪要 | 阿里云百炼（通义千问） | `qwen-plus`、`qwen-flash`、`qwen-max` |
+| 会议纪要 | 第三方 OpenAI-compatible | 自定义完整 Chat Completions 地址与模型名 |
 
-只有“自建 / 自定义（高级）”会显示可编辑的服务地址与模型名。托管预设的地址和模型白名单由 Rust 后端校验，前端不能覆盖。
+只有“自建 / 自定义（高级）”和“第三方 OpenAI-compatible”会显示可编辑的服务地址与模型名。托管预设的地址和模型白名单由 Rust 后端校验，前端不能覆盖。
 
 API Key 的处理原则：
 
@@ -115,13 +121,9 @@ API Key 的处理原则：
 - 不写入 Git、`.env.example`、SQLite、前端日志或会议日志。
 - 密钥绑定到具体 Provider 预设；切换服务商时不会静默复用旧密钥。
 
-`.env.example` 仅用于说明高级环境变量，不会被应用自动加载。PowerShell Mock 启动示例：
+`.env.example` 仅用于说明高级环境变量，不会被应用自动加载。普通用户应优先通过应用内设置完成配置。
 
 ```powershell
-$env:MEETING_DESK_ASR_PRESET_ID = "mock"
-$env:MEETING_DESK_ASR_PROVIDER_KIND = "mock"
-$env:MEETING_DESK_LLM_PRESET_ID = "mock"
-$env:MEETING_DESK_LLM_PROVIDER_KIND = "mock"
 pnpm tauri:dev
 ```
 
@@ -138,9 +140,11 @@ cargo clippy --manifest-path src-tauri\Cargo.toml --all-targets --all-features -
 pnpm build
 ```
 
-`pnpm test:integration` 使用临时生成的 WAV、Rust Mock Provider、会议纪要校验器和内存 SQLite 跑通后端闭环，不调用网络，也不依赖仓库中的私人录音。
+`pnpm test:integration` 使用临时生成的 WAV、内部测试 Provider、会议纪要校验器和内存 SQLite 跑通后端闭环，不调用网络，也不依赖仓库中的私人录音。内部测试 Provider 仅存在于开发测试代码，不作为正式界面功能提供。
 
 ## 构建 Windows 安装包
+
+本地开发构建不生成自动更新签名文件：
 
 ```powershell
 pnpm tauri:build
@@ -150,18 +154,46 @@ pnpm tauri:build
 
 ```text
 src-tauri/target/release/meeting-desk.exe
-src-tauri/target/release/bundle/nsis/听见纪要_0.1.0_x64-setup.exe
+src-tauri/target/release/bundle/nsis/听见纪要_0.2.0_x64-setup.exe
 ```
 
 这些二进制产物已被 `.gitignore` 排除。需要对外分发时，请上传到 GitHub Releases，不要直接提交到源码仓库。
+
+## GitHub 自动打包与软件更新
+
+- `.github/workflows/windows-ci.yml`：推送或合并到 `main` 时运行类型检查、前后端测试、Clippy 和 Windows NSIS 打包，并上传 Actions artifact。
+- `.github/workflows/release.yml`：推送与应用版本一致的标签（例如 `v0.2.0`）后，创建 GitHub Release，上传 NSIS 安装包、签名文件和更新清单 `latest.json`。
+- Tauri 更新端点固定为本仓库的 `releases/latest/download/latest.json`；应用不会接受缺少有效签名的更新。
+
+发布前需在仓库 Actions secrets 中配置 `TAURI_SIGNING_PRIVATE_KEY`。私钥只保存在发布者的安全位置及 GitHub Secret 中，禁止提交到 Git；应用内只包含公钥。生成一套新密钥可运行：
+
+```powershell
+pnpm tauri signer generate -w "$env:LOCALAPPDATA\meeting-desk-release\updater.key"
+```
+
+设置 Secret 后，将三个版本号保持一致（`package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`），再创建并推送标签：
+
+```powershell
+git tag -a v0.2.0 -m "听见纪要 v0.2.0"
+git push origin main
+git push origin v0.2.0
+```
+
+若要在本机验证签名发布构建，请仅在当前 PowerShell 进程设置私钥路径，然后运行：
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = "$env:LOCALAPPDATA\meeting-desk-release\updater.key"
+pnpm tauri:build:release
+Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY
+```
 
 ## 项目结构
 
 ```text
 frontend/src/              React 页面、组件、状态和桌面端客户端
 src-tauri/src/commands/    Tauri IPC 命令与任务编排
-src-tauri/src/ingest/      音频校验、哈希、暂存与清理
-src-tauri/src/providers/   Provider 契约、Mock 与 HTTP 基础设施
+src-tauri/src/ingest/      音视频容器/音轨校验、哈希、暂存与清理
+src-tauri/src/providers/   Provider 契约、内部测试实现与 HTTP 基础设施
 src-tauri/src/minutes/     Schema、模板、Prompt、校验与 Markdown
 src-tauri/src/storage/     SQLite repository
 shared/schemas/            MeetingMinutes JSON Schema
@@ -171,7 +203,7 @@ docs/                      架构、API、安全、测试和 UI 文档
 
 ## 隐私与仓库安全
 
-- 本地录音、导出文件、SQLite、日志、环境变量和安装包均由 `.gitignore` 排除。
+- 本地录音/视频、导出文件、SQLite、日志、环境变量、更新私钥和安装包均由 `.gitignore` 排除。
 - 完整逐字稿只进入本地会议记录和用户主动导出的 Markdown，不写普通运行日志。
 - 删除会议只删除应用记录，不删除用户原始录音。
 - 测试使用生成数据或匿名 fixture；根目录私人录音不会上传到 GitHub。
@@ -189,9 +221,11 @@ docs/                      架构、API、安全、测试和 UI 文档
 
 ## 已知限制
 
-- 真实 Fun-ASR 音频上传、异步任务轮询和响应归一化尚未实现。
-- DeepSeek 真实请求与结构化响应仍未使用有效密钥完成互操作验证。
+- 真实 Fun-ASR 媒体上传、异步任务轮询和响应归一化尚未实现。
+- DeepSeek、阿里云百炼及第三方兼容服务的真实请求与结构化响应仍未使用有效密钥完成互操作验证。
 - 长转写的 map/reduce 分块总结尚未实现。
 - MP3 导入校验暂不计算时长。
 - 远端任务撤销需要在供应商契约验证后接入。
-- 未完成任务在应用重启后会标记为中断并要求重新选择音频；已完成会议仍可查看。
+- MP4/MOV 当前仅接受含单条 AAC 或 ALAC 音轨的 ISO BMFF 文件；不内置 FFmpeg，不处理 AVI/MKV/WebM。
+- Windows 安装包具备 Tauri 更新签名，但尚未配置商业 Authenticode 代码签名证书，首次安装可能触发 SmartScreen 提示。
+- 未完成任务在应用重启后会标记为中断并要求重新选择媒体；已完成会议仍可查看。

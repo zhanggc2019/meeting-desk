@@ -1,17 +1,17 @@
-# Windows 离线音频转写与 AI 会议纪要工具：技术架构
+# Windows 离线音视频转写与 AI 会议纪要工具：技术架构
 
 > 状态：Phase 0 技术决策基线
 > 日期：2026-07-17
-> 适用范围：Windows 11 x64、单文件与批量离线音频导入
+> 适用范围：Windows 11 x64、单文件与批量离线音视频导入
 > 本文不定义任何真实云厂商的私有 HTTP 字段；真实接口必须由后续阶段以最小样本验证。
 
 ## 1. 结论先行
 
 桌面端明确选择 **Tauri 2 + React + TypeScript + Vite + Rust + SQLite**。
 
-应用只处理用户通过 Windows 文件选择器选中的已有离线音频，不创建音频流。就本地文件处理而言，Rust core 只负责文件选择之后的安全校验、受管 staging、流式 hash 和 Provider capability preflight；云端请求、持久化和导出也留在受信任后端，以避免 Key 和任意文件访问进入 WebView。WebView 只负责交互与展示。
+应用只处理用户通过 Windows 文件选择器选中的已有离线音频或视频，不创建音频流。就本地文件处理而言，Rust core 只负责文件选择之后的安全校验、受管 staging、流式 hash 和 Provider capability preflight；云端请求、持久化和导出也留在受信任后端，以避免 Key 和任意文件访问进入 WebView。WebView 只负责交互与展示。
 
-导入入口支持单个或批量选择 WAV、MP3、M4A，但是否能提交必须以当前 `TranscriptionProvider.capabilities()` 返回或已验证配置的容器、媒体类型、编码、大小和时长约束为准。扩展名不等于实际格式，M4A 容器也不代表内部编码一定被供应商接受。
+导入入口支持单个或批量选择 WAV、MP3、M4A、MP4、MOV。MP4/MOV 在 Rust core 中解析 ISO BMFF 结构，并要求存在一条 AAC (`mp4a`) 或 ALAC 音轨；视频画面不在本地解码。是否能提交还必须以当前 `TranscriptionProvider.capabilities()` 返回或已验证配置的容器、媒体类型、编码、大小和时长约束为准。
 
 MVP 不默认转码、不默认切片，不捆绑或调用 FFmpeg。某个供应商不接受源文件时，应用应给出可操作的 `unsupported_media` 或 limit 错误，而不是静默改变文件内容。后续是否加入转换能力必须由真实 Provider 证据和产品决策驱动。
 
@@ -41,13 +41,21 @@ Tauri 2 满足当前范围：
 - Tauri 2 capabilities 可对白名单窗口限制命令面，并默认阻止远程来源访问应用 API。[Tauri：Capabilities](https://v2.tauri.app/security/capabilities/)
 - 当前业务不需要额外桌面运行时或媒体管线；Tauri 2 作为最终桌面壳，不再保留另一套壳的并行实现路径。
 
-尚未实测的事项：Tauri 开发启动、Windows release build、installer、企业代理、自签 CA、WebView2 更新策略和代码签名。它们必须在对应阶段以实际命令验证。
+已实测 Tauri release build、NSIS 生成、updater `.sig` 生成和 release exe 启动。尚未实测 NSIS 安装/卸载、旧版到新版的真实升级、企业代理、自签 CA、WebView2 更新策略和 Authenticode 代码签名；这些事项必须在正式企业分发前验证。
+
+### 3.1 自动更新与发布信任链
+
+- 桌面端使用 Tauri 2 updater；启动后静默请求 GitHub Releases 的 `latest.json`，只有发现更高版本时才显示更新提示。
+- `latest.json`、NSIS 安装包和 `.sig` 由标签触发的 GitHub Actions 生成。更新私钥仅存在于 GitHub Actions Secret 和发布者安全目录，应用包只嵌入公钥。
+- 更新包必须通过 Tauri 签名验证，签名校验不可在客户端关闭；下载或安装失败只显示安全错误，不输出响应正文或 URL 参数。
+- 普通 `main` CI 使用覆盖配置关闭 updater artifact 生成，因此不需要向非发布工作流暴露签名私钥。
+- 该更新签名用于保证更新来源和完整性，不等同于 Windows Authenticode。企业分发仍应配置独立代码签名证书并验证 SmartScreen 策略。
 
 ## 4. 总体架构
 
 ```text
 ┌──────────────────────── React / TypeScript UI ────────────────────────┐
-│ 文件选择 │ 批量列表 │ 处理状态 │ 历史搜索 │ 纪要详情 │ 设置 │ 导出 │
+│ 媒体选择 │ 批量列表 │ 处理状态 │ 历史搜索 │ 纪要详情 │ 设置 │ 导出 │ 更新 │
 └──────────────────── typed commands / safe events ─────────────────────┘
                                   │
 ┌──────────────────────────── Tauri Rust Core ──────────────────────────┐
@@ -58,7 +66,7 @@ Tauri 2 满足当前范围：
 │   upload -> transcribe -> summarize -> validate -> persist            │
 │                                                                      │
 │ TranscriptionProvider / MinutesProvider / Mock Providers             │
-│ SQLite Repository / Markdown Export / Windows Credential Store       │
+│ SQLite Repository / Markdown Export / Credential Store / Updater     │
 └──────────────────────────────────────────────────────────────────────┘
        │ app-local-data                │ HTTPS              │ vault
   staged files + SQLite           cloud providers      provider secrets
@@ -112,7 +120,7 @@ SelectedFileRef
 约束：
 
 - 只接受用户在当前交互中选中的文件引用，不提供前端任意路径读取命令。
-- 支持 WAV、MP3、M4A 的入口筛选，但必须同时验证文件头/容器，不只看后缀。
+- 支持 WAV、MP3、M4A、MP4、MOV 的入口筛选，但必须同时验证文件头、容器和音轨，不只看后缀。
 - staging 采用分块 I/O，不把大文件整体加载到内存；临时文件只位于 app-local-data。
 - hash 针对 staged copy 计算，用于完整性、去重提示和幂等辅助；不能将完整 hash 写入普通日志。
 - staging 前后检查源文件大小和修改时间。若复制过程中源文件变化，返回 `source_file_changed`，不提交不一致副本。
@@ -347,7 +355,7 @@ mock.scenario
 
 1. Tauri Windows 应用可启动、构建并完成至少一种 installer 构建。
 2. 单文件和混合批量选择能完成校验、staging、流式 hash 和 Provider capability preflight。
-3. WAV、MP3、M4A 的入口行为有 fixtures；是否接受由 mock/真实 capabilities 决定，扩展名伪装、空文件和损坏容器被拒绝。
+3. WAV、MP3、M4A、MP4、MOV 的入口行为有 fixtures；是否接受由内部测试/真实 capabilities 决定，扩展名伪装、空文件、损坏容器和无音轨视频被拒绝。
 4. 使用仓库现有真实 MP3 或另一份非敏感文件跑通 mock 全链路：`import -> transcript -> schema-valid minutes -> SQLite -> UI -> Markdown`。
 5. 上传、转写和总结三个阶段的取消均有验证；远端不支持撤销时 UI 语义诚实。
 6. 401、429、500、timeout、网络中断、重复提交、批量部分失败和重启恢复有实际测试结果。

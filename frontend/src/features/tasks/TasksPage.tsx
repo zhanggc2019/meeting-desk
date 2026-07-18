@@ -138,8 +138,8 @@ export function TasksPage() {
             <div className="empty-state compact-empty">
               <FileAudio size={26} aria-hidden="true" />
               <h2>当前没有匹配的任务</h2>
-              <p>选择本地音频文件后，处理状态会显示在这里。</p>
-              <button className="button primary" type="button" onClick={() => navigate("workspace")}>选择音频文件</button>
+              <p>选择本地音频或视频后，处理状态会显示在这里。</p>
+              <button className="button primary" type="button" onClick={() => navigate("workspace")}>选择媒体文件</button>
             </div>
           ) : null}
           {tasks.length > 0 ? (

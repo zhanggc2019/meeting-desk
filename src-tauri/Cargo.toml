@@ -1,7 +1,7 @@
 [package]
 name = "meeting-desk"
-version = "0.1.0"
-description = "Windows offline audio transcription and meeting minutes desktop tool"
+version = "0.2.0"
+description = "Windows offline media transcription and meeting minutes desktop tool"
 authors = ["Internal Tools Team"]
 edition = "2021"
 
@@ -24,6 +24,8 @@ serde_json = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-process = "2.3.1"
+tauri-plugin-updater = "2.10.1"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1", features = ["serde", "v4"] }
