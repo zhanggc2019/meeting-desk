@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "1.0.0",
+  "title": "匿名项目评审会",
+  "titleSource": "context",
+  "meetingTime": {
+    "startAt": "2026-07-17T09:00:00+08:00",
+    "endAt": "2026-07-17T09:30:00+08:00"
+  },
+  "participants": ["测试成员甲", "测试成员乙"],
+  "summary": "会议确认采用分阶段上线方案，先在测试环境完成验证。",
+  "topics": [
+    {
+      "title": "分阶段上线验证",
+      "summary": "先在测试环境验证方案。",
+      "evidenceSegmentIds": ["s1", "s2"]
+    }
+  ],
+  "conclusions": [
+    {
+      "content": "采用分阶段上线方案。",
+      "evidenceSegmentIds": ["s1"]
+    }
+  ],
+  "decisions": [
+    {
+      "content": "先在测试环境完成验证。",
+      "evidenceSegmentIds": ["s2"]
+    }
+  ],
+  "actionItems": [
+    {
+      "description": "完成测试环境验证。",
+      "owner": "测试团队",
+      "dueDateText": "2026年7月20日",
+      "dueDate": "2026-07-20",
+      "evidenceSegmentIds": ["s2"]
+    }
+  ],
+  "risksAndIssues": [
+    {
+      "kind": "risk",
+      "description": "外部依赖响应较慢。",
+      "impact": "可能影响验证。",
+      "mitigation": "提前准备缓存数据。",
+      "evidenceSegmentIds": ["s3"]
+    }
+  ]
+}

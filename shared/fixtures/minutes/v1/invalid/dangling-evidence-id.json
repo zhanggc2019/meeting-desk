@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1.0.0",
+  "title": "匿名项目评审会",
+  "titleSource": "context",
+  "meetingTime": {
+    "startAt": "2026-07-17T09:00:00+08:00",
+    "endAt": "2026-07-17T09:30:00+08:00"
+  },
+  "participants": ["测试成员甲", "测试成员乙"],
+  "summary": "会议确认方案。",
+  "topics": [
+    {
+      "title": "方案",
+      "summary": null,
+      "evidenceSegmentIds": ["not-found"]
+    }
+  ],
+  "conclusions": [],
+  "decisions": [],
+  "actionItems": [],
+  "risksAndIssues": []
+}

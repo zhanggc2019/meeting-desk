@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1.0.0",
+  "title": "匿名讨论",
+  "titleSource": "generated",
+  "meetingTime": { "startAt": null, "endAt": null },
+  "participants": ["speaker_1"],
+  "summary": "匿名讨论。",
+  "topics": [],
+  "conclusions": [],
+  "decisions": [],
+  "actionItems": [],
+  "risksAndIssues": []
+}

@@ -1,0 +1,52 @@
+{
+  "templateId": "standard_meeting",
+  "templateVersion": "1.0.0",
+  "lowConfidenceThreshold": 0.6,
+  "context": {
+    "knownTitle": "匿名项目评审会",
+    "knownStartAt": "2026-07-17T09:00:00+08:00",
+    "knownEndAt": "2026-07-17T09:30:00+08:00",
+    "knownParticipants": ["测试成员甲", "测试成员乙"]
+  },
+  "transcript": {
+    "schemaVersion": "1",
+    "text": "本次评审确认采用分阶段上线方案。会议决定先在测试环境验证，由测试团队负责，2026年7月20日完成验证。当前风险是外部依赖响应较慢，可能影响验证；已有措施是提前准备缓存数据。",
+    "language": "zh-CN",
+    "durationMs": 30000,
+    "segments": [
+      {
+        "id": "s1",
+        "startMs": 0,
+        "endMs": 8000,
+        "speakerLabel": "speaker_1",
+        "text": "本次评审确认采用分阶段上线方案。",
+        "confidence": 0.99
+      },
+      {
+        "id": "s2",
+        "startMs": 8100,
+        "endMs": 20000,
+        "speakerLabel": "speaker_2",
+        "text": "会议决定先在测试环境验证，由测试团队负责，2026年7月20日完成验证。",
+        "confidence": 0.98
+      },
+      {
+        "id": "s3",
+        "startMs": 20100,
+        "endMs": 30000,
+        "speakerLabel": "speaker_1",
+        "text": "当前风险是外部依赖响应较慢，可能影响验证；已有措施是提前准备缓存数据。",
+        "confidence": 0.95
+      }
+    ],
+    "providerMetadata": {
+      "providerId": "fixture",
+      "adapterId": "fixture",
+      "adapterVersion": "1.0.0",
+      "model": "fixture-model",
+      "remoteRequestId": null,
+      "startedAt": "2026-07-17T01:00:00Z",
+      "completedAt": "2026-07-17T01:00:01Z"
+    }
+  }
+}

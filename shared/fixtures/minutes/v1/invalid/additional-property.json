@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "title": null,
+  "titleSource": "unknown",
+  "meetingTime": { "startAt": null, "endAt": null },
+  "participants": [],
+  "summary": null,
+  "topics": [],
+  "conclusions": [],
+  "decisions": [],
+  "actionItems": [],
+  "risksAndIssues": [],
+  "unexpected": "不应接受"
+}

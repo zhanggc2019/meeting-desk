@@ -1,0 +1,52 @@
+{
+  "templateId": "customer_communication",
+  "templateVersion": "1.0.0",
+  "lowConfidenceThreshold": 0.6,
+  "context": {
+    "knownTitle": "匿名客户沟通",
+    "knownStartAt": null,
+    "knownEndAt": null,
+    "knownParticipants": ["客户代表", "项目代表"]
+  },
+  "transcript": {
+    "schemaVersion": "1",
+    "text": "客户建议增加报表筛选，但尚未确认范围。双方确认先提供字段清单。项目团队负责整理字段清单。",
+    "language": "zh-CN",
+    "durationMs": 18000,
+    "segments": [
+      {
+        "id": "c1",
+        "startMs": 0,
+        "endMs": 6000,
+        "speakerLabel": "speaker_1",
+        "text": "客户建议增加报表筛选，但尚未确认范围。",
+        "confidence": 0.98
+      },
+      {
+        "id": "c2",
+        "startMs": 6100,
+        "endMs": 12000,
+        "speakerLabel": "speaker_2",
+        "text": "双方确认先提供字段清单。",
+        "confidence": 0.99
+      },
+      {
+        "id": "c3",
+        "startMs": 12100,
+        "endMs": 18000,
+        "speakerLabel": "speaker_2",
+        "text": "项目团队负责整理字段清单。",
+        "confidence": 0.99
+      }
+    ],
+    "providerMetadata": {
+      "providerId": "fixture",
+      "adapterId": "fixture",
+      "adapterVersion": "1.0.0",
+      "model": "fixture-model",
+      "remoteRequestId": null,
+      "startedAt": "2026-07-17T04:00:00Z",
+      "completedAt": "2026-07-17T04:00:01Z"
+    }
+  }
+}

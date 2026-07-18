@@ -1,0 +1,44 @@
+{
+  "templateId": "project_weekly",
+  "templateVersion": "1.0.0",
+  "lowConfidenceThreshold": 0.6,
+  "context": {
+    "knownTitle": "匿名项目周会",
+    "knownStartAt": null,
+    "knownEndAt": null,
+    "knownParticipants": ["项目成员甲"]
+  },
+  "transcript": {
+    "schemaVersion": "1",
+    "text": "本周已完成接口联调。供应排期可能推迟，需要人工核对。",
+    "language": "zh-CN",
+    "durationMs": 12000,
+    "segments": [
+      {
+        "id": "p1",
+        "startMs": 0,
+        "endMs": 5000,
+        "speakerLabel": null,
+        "text": "本周已完成接口联调。",
+        "confidence": 0.97
+      },
+      {
+        "id": "p2",
+        "startMs": 5100,
+        "endMs": 12000,
+        "speakerLabel": null,
+        "text": "供应排期可能推迟，需要人工核对。",
+        "confidence": 0.25
+      }
+    ],
+    "providerMetadata": {
+      "providerId": "fixture",
+      "adapterId": "fixture",
+      "adapterVersion": "1.0.0",
+      "model": "fixture-model",
+      "remoteRequestId": null,
+      "startedAt": "2026-07-17T03:00:00Z",
+      "completedAt": "2026-07-17T03:00:01Z"
+    }
+  }
+}

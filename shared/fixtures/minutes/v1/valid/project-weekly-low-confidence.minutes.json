@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1.0.0",
+  "title": "匿名项目周会",
+  "titleSource": "context",
+  "meetingTime": {
+    "startAt": null,
+    "endAt": null
+  },
+  "participants": ["项目成员甲"],
+  "summary": "本周报告已完成接口联调，供应排期信息需要人工核对。",
+  "topics": [
+    {
+      "title": "接口联调进展",
+      "summary": "本周已完成接口联调。",
+      "evidenceSegmentIds": ["p1"]
+    }
+  ],
+  "conclusions": [
+    {
+      "content": "接口联调已完成。",
+      "evidenceSegmentIds": ["p1"]
+    }
+  ],
+  "decisions": [],
+  "actionItems": [],
+  "risksAndIssues": [
+    {
+      "kind": "issue",
+      "description": "供应排期可能推迟的信息置信度较低，需要人工核对。",
+      "impact": null,
+      "mitigation": null,
+      "evidenceSegmentIds": ["p2"]
+    }
+  ]
+}

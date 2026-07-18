@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "1.0.0",
+  "title": "匿名客户沟通",
+  "titleSource": "context",
+  "meetingTime": {
+    "startAt": null,
+    "endAt": null
+  },
+  "participants": ["客户代表", "项目代表"],
+  "summary": "客户提出报表筛选建议，双方确认先提供字段清单。",
+  "topics": [
+    {
+      "title": "报表筛选建议",
+      "summary": "客户建议增加报表筛选，范围尚未确认。",
+      "evidenceSegmentIds": ["c1"]
+    }
+  ],
+  "conclusions": [],
+  "decisions": [
+    {
+      "content": "先提供字段清单。",
+      "evidenceSegmentIds": ["c2"]
+    }
+  ],
+  "actionItems": [
+    {
+      "description": "整理字段清单。",
+      "owner": "项目团队",
+      "dueDateText": null,
+      "dueDate": null,
+      "evidenceSegmentIds": ["c3"]
+    }
+  ],
+  "risksAndIssues": [
+    {
+      "kind": "issue",
+      "description": "报表筛选范围尚未确认。",
+      "impact": null,
+      "mitigation": null,
+      "evidenceSegmentIds": ["c1"]
+    }
+  ]
+}

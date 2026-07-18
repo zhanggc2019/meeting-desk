@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1.0.0",
+  "title": "匿名样例整理",
+  "titleSource": "generated",
+  "meetingTime": {
+    "startAt": null,
+    "endAt": null
+  },
+  "participants": [],
+  "summary": "团队确认整理匿名样例。",
+  "topics": [
+    {
+      "title": "匿名样例整理",
+      "summary": "讨论并确认整理匿名样例。",
+      "evidenceSegmentIds": []
+    }
+  ],
+  "conclusions": [],
+  "decisions": [
+    {
+      "content": "整理匿名样例。",
+      "evidenceSegmentIds": []
+    }
+  ],
+  "actionItems": [
+    {
+      "description": "整理匿名样例。",
+      "owner": "测试团队",
+      "dueDateText": "明天下午前",
+      "dueDate": null,
+      "evidenceSegmentIds": []
+    }
+  ],
+  "risksAndIssues": []
+}

@@ -1,0 +1,27 @@
+{
+  "templateId": "standard_meeting",
+  "templateVersion": "1.0.0",
+  "lowConfidenceThreshold": null,
+  "context": {
+    "knownTitle": null,
+    "knownStartAt": null,
+    "knownEndAt": null,
+    "knownParticipants": []
+  },
+  "transcript": {
+    "schemaVersion": "1",
+    "text": "团队决定整理匿名样例，由测试团队负责，明天下午前完成。",
+    "language": "zh-CN",
+    "durationMs": null,
+    "segments": [],
+    "providerMetadata": {
+      "providerId": "fixture",
+      "adapterId": "fixture",
+      "adapterVersion": "1.0.0",
+      "model": "fixture-model",
+      "remoteRequestId": null,
+      "startedAt": "2026-07-17T02:00:00Z",
+      "completedAt": "2026-07-17T02:00:01Z"
+    }
+  }
+}
