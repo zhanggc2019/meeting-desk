@@ -165,6 +165,8 @@ src-tauri/target/release/bundle/nsis/听见纪要_0.2.0_x64-setup.exe
 - `.github/workflows/release.yml`：推送与应用版本一致的标签（例如 `v0.2.0`）后，创建 GitHub Release，上传 NSIS 安装包、签名文件和更新清单 `latest.json`。
 - Tauri 更新端点固定为本仓库的 `releases/latest/download/latest.json`；应用不会接受缺少有效签名的更新。
 
+> 自动更新端点必须允许未登录的桌面客户端读取。当前 GitHub 仓库是 Private，Release 构建与签名虽然正常，但客户端访问 `releases/latest/download/latest.json` 会得到 404。要启用实际自动更新，请由仓库所有者将仓库改为 Public，或把同样的签名资产发布到无需登录的 HTTPS 分发地址；不要在桌面应用中内置 GitHub Token。
+
 发布前需在仓库 Actions secrets 中配置 `TAURI_SIGNING_PRIVATE_KEY`。私钥只保存在发布者的安全位置及 GitHub Secret 中，禁止提交到 Git；应用内只包含公钥。生成一套新密钥可运行：
 
 ```powershell
