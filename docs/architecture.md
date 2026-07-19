@@ -50,7 +50,7 @@ Tauri 2 满足当前范围：
 - 更新包必须通过 Tauri 签名验证，签名校验不可在客户端关闭；下载或安装失败只显示安全错误，不输出响应正文或 URL 参数。
 - 普通 `main` CI 使用覆盖配置关闭 updater artifact 生成，因此不需要向非发布工作流暴露签名私钥。
 - 该更新签名用于保证更新来源和完整性，不等同于 Windows Authenticode。企业分发仍应配置独立代码签名证书并验证 SmartScreen 策略。
-- GitHub Release updater 端点必须对未登录客户端公开。Private 仓库会让桌面客户端得到 404；不得通过在应用中嵌入仓库 Token 绕过。启用前必须改为 Public 或迁移到无需登录的签名资产分发端点。
+- GitHub Release updater 端点必须对未登录客户端公开，且不得在应用中嵌入仓库 Token。当前仓库已设为 Public；匿名 `latest.json` 请求以及带 `Accept: application/octet-stream` 的安装包请求均已验证为 HTTP 200。
 
 ## 4. 总体架构
 

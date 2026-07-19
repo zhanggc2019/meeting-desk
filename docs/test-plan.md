@@ -75,7 +75,7 @@
 | 配置引导 | 单侧缺失、两侧真实就绪、打开设置、DeepSeek/百炼/第三方兼容切换 | Windows Credential Manager 重启后就绪状态与真实 Provider 契约验证 |
 | Markdown 预览 | 后端预览与导出共用渲染器、标题/列表/表格/逐字稿、禁用 raw HTML | 超长逐字稿渲染性能、复制选择和打印布局 |
 | Packaging | release exe 与 NSIS 成功；bundle 未发现明显敏感附带文件 | 实际安装/启动/卸载、签名、UAC/权限、WebView2 缺失、SmartScreen/EDR |
-| Updater | 前端静默检查/发现版本/下载进度/重启组件测试；Tauri 公钥、固定 GitHub endpoint、最小 capability；CI 与标签发布工作流；Release 三项资产已生成 | **BLOCKED：仓库当前为 Private，未登录客户端访问 latest.json 返回 404**；改为 Public 或迁移公开分发端点后，再做旧版到新版、代理/断网/损坏签名回归 |
+| Updater | `PASS`：前端静默检查/发现版本/下载进度/重启组件测试；Tauri 公钥、固定 GitHub endpoint、最小 capability；CI 与标签发布工作流；Release 三项资产已生成；匿名 `latest.json` 与安装包下载均为 HTTP 200 | 尚需补旧版到新版的真实安装升级、代理/断网和损坏签名回归 |
 
 ### 2.4 Lead 必须关闭的测试门槛
 
