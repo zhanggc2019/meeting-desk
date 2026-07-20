@@ -6,7 +6,7 @@
 
 ## 项目状态
 
-当前版本为 `0.2.0`，适合桌面界面开发、配置流程验证和本地自动化测试。
+当前版本为 `0.3.0`，适合桌面界面开发、配置流程验证和本地自动化测试。
 
 - ✅ Tauri 2 桌面壳、React 界面和 SQLite 本地存储可运行。
 - ✅ 内部离线测试链路已贯通：`导入媒体 → 转写 → 生成纪要 → 保存 → 展示 → Markdown 预览/导出`；正式界面不提供演示模式。
@@ -164,7 +164,7 @@ pnpm tauri:build
 
 ```text
 src-tauri/target/release/meeting-desk.exe
-src-tauri/target/release/bundle/nsis/听见纪要_0.2.0_x64-setup.exe
+src-tauri/target/release/bundle/nsis/听见纪要_0.3.0_x64-setup.exe
 ```
 
 这些二进制产物已被 `.gitignore` 排除。需要对外分发时，请上传到 GitHub Releases，不要直接提交到源码仓库。
@@ -172,8 +172,10 @@ src-tauri/target/release/bundle/nsis/听见纪要_0.2.0_x64-setup.exe
 ## GitHub 自动打包与软件更新
 
 - `.github/workflows/windows-ci.yml`：推送或合并到 `main` 时运行类型检查、前后端测试、Clippy 和 Windows NSIS 打包，并上传 Actions artifact。
-- `.github/workflows/release.yml`：推送与应用版本一致的标签（例如 `v0.2.0`）后，创建 GitHub Release，上传 NSIS 安装包、签名文件和更新清单 `latest.json`。
+- `.github/workflows/release.yml`：推送与应用版本一致的标签（例如 `v0.3.0`）后，创建 GitHub Release，上传 NSIS 安装包、签名文件和更新清单 `latest.json`。
 - Tauri 更新端点固定为本仓库的 `releases/latest/download/latest.json`；应用不会接受缺少有效签名的更新。
+
+> **推送 `main` 不会发布新版本。** 它只运行 Windows CI，并把安装包保存为该次 Actions Run 的 artifact。只有同时更新应用版本、提交到 `main`，再推送对应的 `v*` 标签，才会触发正式 Release 工作流。若 Actions 页面只出现 `Windows CI` 而没有 `Publish signed Windows release`，应先检查远程是否存在与当前版本一致的新标签。
 
 > 仓库已设为 Public。2026-07-19 已从未登录环境验证：`latest.json` 返回 HTTP 200，版本为 `0.2.0`；Tauri updater 使用 `Accept: application/octet-stream` 下载 GitHub API 资产时返回 HTTP 200 和 Windows 安装包。应用不内置 GitHub Token。
 
@@ -186,9 +188,9 @@ pnpm tauri signer generate -w "$env:LOCALAPPDATA\meeting-desk-release\updater.ke
 设置 Secret 后，将三个版本号保持一致（`package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`），再创建并推送标签：
 
 ```powershell
-git tag -a v0.2.0 -m "听见纪要 v0.2.0"
+git tag -a v0.3.0 -m "听见纪要 v0.3.0"
 git push origin main
-git push origin v0.2.0
+git push origin v0.3.0
 ```
 
 若要在本机验证签名发布构建，请仅在当前 PowerShell 进程设置私钥路径，然后运行：

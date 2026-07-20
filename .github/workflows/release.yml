@@ -64,11 +64,11 @@ jobs:
           tagName: v__VERSION__
           releaseName: 听见纪要 v__VERSION__
           releaseBody: |
-            - 新增 Windows 签名自动更新与 GitHub 自动打包。
-            - 新增带 AAC/ALAC 音轨的 MP4、MOV 视频导入与批量处理入口。
-            - 完善 Provider 配置引导、DeepSeek、阿里云百炼和第三方兼容预设。
+            - 新增 Xiaomi MiMo `mimo-v2.5-asr` 托管预设和专用转写适配器。
+            - 新增火山引擎录音文件识别极速版，支持本地 Base64 和 Provider 侧 HTTPS 文件 URL。
+            - 增加远程录音 URL 的安全校验、签名参数遮蔽、能力声明和 mock 测试。
 
-            当前真实 Fun-ASR 文件上传/轮询适配仍未完成验证，本版本不会把未验证请求伪装为成功。安装后，应用会在启动时静默检查后续版本。
+            当前真实任务编排总闸门仍未开放，桌面端 URL 输入控件也尚未接入；本版本不会上传真实录音或把未验证请求伪装为成功。
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true
