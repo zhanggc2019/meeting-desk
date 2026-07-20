@@ -29,6 +29,8 @@ interface ProviderPresetDefinition {
 
 const DASHSCOPE_FUNASR_CN_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription";
 const DASHSCOPE_FUNASR_INTL_ENDPOINT = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription";
+const XIAOMI_MIMO_ASR_ENDPOINT = "https://api.xiaomimimo.com/v1/chat/completions";
+const VOLCENGINE_ASR_FLASH_ENDPOINT = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions";
 const ALIYUN_BAILIAN_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 
@@ -56,6 +58,28 @@ const TRANSCRIPTION_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
       { value: "fun-asr-mtl", label: "fun-asr-mtl" },
     ],
     description: "适合阿里云国际站新加坡地域账号，官方请求地址由软件维护。",
+  },
+  {
+    id: "xiaomi_mimo_asr",
+    label: "Xiaomi MiMo 语音识别",
+    kind: "xiaomi_mimo",
+    endpoint: XIAOMI_MIMO_ASR_ENDPOINT,
+    defaultModel: "mimo-v2.5-asr",
+    models: [
+      { value: "mimo-v2.5-asr", label: "mimo-v2.5-asr" },
+    ],
+    description: "支持 MP3/WAV 录音文件，官方请求地址和模型由软件维护。",
+  },
+  {
+    id: "volcengine_asr_flash",
+    label: "火山引擎录音文件识别（极速版）",
+    kind: "volcengine_asr",
+    endpoint: VOLCENGINE_ASR_FLASH_ENDPOINT,
+    defaultModel: "bigmodel",
+    models: [
+      { value: "bigmodel", label: "豆包录音文件识别大模型" },
+    ],
+    description: "面向新版控制台 X-Api-Key，单次请求返回录音文件转写。",
   },
   {
     id: "custom_openai_compatible",
@@ -123,6 +147,8 @@ function inferPresetId(settings: PublicProviderSettings, target: ProviderTarget)
   if (settings.kind === "mock") return target === "transcription" ? "dashscope_funasr_cn" : "deepseek";
   if (target === "transcription" && settings.endpoint === DASHSCOPE_FUNASR_CN_ENDPOINT) return "dashscope_funasr_cn";
   if (target === "transcription" && settings.endpoint === DASHSCOPE_FUNASR_INTL_ENDPOINT) return "dashscope_funasr_intl";
+  if (target === "transcription" && settings.endpoint === XIAOMI_MIMO_ASR_ENDPOINT) return "xiaomi_mimo_asr";
+  if (target === "transcription" && settings.endpoint === VOLCENGINE_ASR_FLASH_ENDPOINT) return "volcengine_asr_flash";
   if (target === "minutes" && settings.endpoint === DEEPSEEK_ENDPOINT) return "deepseek";
   if (target === "minutes" && settings.endpoint === ALIYUN_BAILIAN_ENDPOINT) return "aliyun_bailian";
   return "custom_openai_compatible";

@@ -180,12 +180,13 @@ async fn probe_provider_endpoint(
         .redirect(Policy::none())
         .build()
         .map_err(|_| CommandError::new("connection_test_failed", "无法创建连接测试", true))?;
-    let response = client
-        .get(&provider.endpoint)
-        .bearer_auth(api_key)
-        .send()
-        .await
-        .map_err(map_connection_probe_error)?;
+    let request = client.get(&provider.endpoint);
+    let request = if provider.kind == "volcengine_asr" {
+        request.header("X-Api-Key", api_key)
+    } else {
+        request.bearer_auth(api_key)
+    };
+    let response = request.send().await.map_err(map_connection_probe_error)?;
     Ok(classify_probe_status(response.status()))
 }
 
@@ -291,6 +292,16 @@ fn resolve_provider(
             config::DASHSCOPE_FUNASR_INTL_ENDPOINT.to_string(),
             managed_model(&input.model, &["fun-asr", "fun-asr-mtl"], "fun-asr")?,
         ),
+        config::PRESET_XIAOMI_MIMO_ASR => (
+            "xiaomi_mimo".to_string(),
+            config::XIAOMI_MIMO_ASR_ENDPOINT.to_string(),
+            managed_model(&input.model, &["mimo-v2.5-asr"], "mimo-v2.5-asr")?,
+        ),
+        config::PRESET_VOLCENGINE_ASR_FLASH => (
+            "volcengine_asr".to_string(),
+            config::VOLCENGINE_ASR_FLASH_ENDPOINT.to_string(),
+            managed_model(&input.model, &["bigmodel"], "bigmodel")?,
+        ),
         config::PRESET_DEEPSEEK => (
             "openai_compatible".to_string(),
             config::DEEPSEEK_ENDPOINT.to_string(),
@@ -362,6 +373,16 @@ fn canonicalize_managed_provider(provider: &mut PublicProviderConfig, target: Pr
                 provider.model = "fun-asr".to_string();
             }
         }
+        (config::PRESET_XIAOMI_MIMO_ASR, ProviderTarget::Transcription) => {
+            provider.kind = "xiaomi_mimo".to_string();
+            provider.endpoint = config::XIAOMI_MIMO_ASR_ENDPOINT.to_string();
+            provider.model = "mimo-v2.5-asr".to_string();
+        }
+        (config::PRESET_VOLCENGINE_ASR_FLASH, ProviderTarget::Transcription) => {
+            provider.kind = "volcengine_asr".to_string();
+            provider.endpoint = config::VOLCENGINE_ASR_FLASH_ENDPOINT.to_string();
+            provider.model = "bigmodel".to_string();
+        }
         (config::PRESET_DEEPSEEK, ProviderTarget::Minutes) => {
             provider.kind = "openai_compatible".to_string();
             provider.endpoint = config::DEEPSEEK_ENDPOINT.to_string();
@@ -423,6 +444,12 @@ fn validate_preset_target(preset_id: &str, target: ProviderTarget) -> Result<(),
             ProviderTarget::Transcription
         ) | (
             config::PRESET_DASHSCOPE_FUNASR_INTL,
+            ProviderTarget::Transcription
+        ) | (
+            config::PRESET_XIAOMI_MIMO_ASR,
+            ProviderTarget::Transcription
+        ) | (
+            config::PRESET_VOLCENGINE_ASR_FLASH,
             ProviderTarget::Transcription
         ) | (config::PRESET_DEEPSEEK, ProviderTarget::Minutes)
             | (config::PRESET_ALIYUN_BAILIAN, ProviderTarget::Minutes)
@@ -631,6 +658,36 @@ mod tests {
         assert_eq!(public.endpoint, config::DASHSCOPE_FUNASR_CN_ENDPOINT);
     }
 
+    /// 验证 Xiaomi MiMo 托管预设固定官方地址和唯一模型。
+    #[test]
+    fn managed_xiaomi_mimo_uses_fixed_contract() {
+        let mut input = valid_input();
+        input.preset_id = config::PRESET_XIAOMI_MIMO_ASR.to_string();
+        input.kind = "untrusted_kind".to_string();
+        input.endpoint = "https://attacker.example.test/collect".to_string();
+        input.model.clear();
+        let public = resolve_provider(&input, ProviderTarget::Transcription, None, false)
+            .expect("MiMo 托管预设应使用固定字段");
+        assert_eq!(public.kind, "xiaomi_mimo");
+        assert_eq!(public.endpoint, config::XIAOMI_MIMO_ASR_ENDPOINT);
+        assert_eq!(public.model, "mimo-v2.5-asr");
+    }
+
+    /// 验证火山引擎托管预设固定极速版地址和模型。
+    #[test]
+    fn managed_volcengine_flash_uses_fixed_contract() {
+        let mut input = valid_input();
+        input.preset_id = config::PRESET_VOLCENGINE_ASR_FLASH.to_string();
+        input.kind = "untrusted_kind".to_string();
+        input.endpoint = "https://attacker.example.test/collect".to_string();
+        input.model.clear();
+        let public = resolve_provider(&input, ProviderTarget::Transcription, None, false)
+            .expect("火山引擎托管预设应使用固定字段");
+        assert_eq!(public.kind, "volcengine_asr");
+        assert_eq!(public.endpoint, config::VOLCENGINE_ASR_FLASH_ENDPOINT);
+        assert_eq!(public.model, "bigmodel");
+    }
+
     /// 验证托管 DeepSeek 预设忽略伪造地址并使用默认模型。
     #[test]
     fn managed_deepseek_uses_fixed_endpoint_and_default_model() {
@@ -674,6 +731,16 @@ mod tests {
         bailian.preset_id = config::PRESET_ALIYUN_BAILIAN.to_string();
         bailian.model = "unknown-qwen".to_string();
         assert!(resolve_provider(&bailian, ProviderTarget::Minutes, None, false).is_err());
+
+        let mut mimo = valid_input();
+        mimo.preset_id = config::PRESET_XIAOMI_MIMO_ASR.to_string();
+        mimo.model = "unknown-asr".to_string();
+        assert!(resolve_provider(&mimo, ProviderTarget::Transcription, None, false).is_err());
+
+        let mut volc = valid_input();
+        volc.preset_id = config::PRESET_VOLCENGINE_ASR_FLASH.to_string();
+        volc.model = "unknown-asr".to_string();
+        assert!(resolve_provider(&volc, ProviderTarget::Transcription, None, false).is_err());
     }
 
     /// 验证正式设置接口不再接受旧版 Mock 预设。

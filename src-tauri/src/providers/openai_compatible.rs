@@ -409,6 +409,7 @@ impl OpenAiCompatibleTranscriptionProvider {
             method: self.mapping.method,
             endpoint,
             body: ProviderHttpBody::Multipart(body),
+            headers: BTreeMap::new(),
             timeout,
             max_response_bytes: self.config.max_response_bytes,
             response_header_allowlist: self
@@ -591,6 +592,7 @@ impl OpenAiCompatibleMinutesProvider {
             method: self.mapping.method,
             endpoint,
             body: ProviderHttpBody::Json(self.render_body(request)?),
+            headers: BTreeMap::new(),
             timeout,
             max_response_bytes: self.config.max_response_bytes,
             response_header_allowlist: self
@@ -734,7 +736,7 @@ impl MinutesProvider for OpenAiCompatibleMinutesProvider {
 
 /// Executes an HTTP request with finite retries and evidenced replay safety.
 #[allow(clippy::too_many_arguments)]
-async fn execute_with_retry(
+pub(crate) async fn execute_with_retry(
     executor: &dyn HttpExecutor,
     config: &ProviderHttpConfig,
     request: &ProviderHttpRequest,
@@ -805,7 +807,7 @@ async fn execute_with_retry(
 }
 
 /// Acquires a fair provider concurrency permit with cancellation and deadline support.
-async fn acquire_permit(
+pub(crate) async fn acquire_permit(
     semaphore: Arc<Semaphore>,
     cancellation_token: &super::CancellationToken,
     deadline: Instant,
@@ -826,14 +828,17 @@ async fn acquire_permit(
 }
 
 /// Computes the earlier of caller and provider-profile overall deadlines.
-fn effective_deadline(context: &ProviderCallContext, config: &ProviderHttpConfig) -> Instant {
+pub(crate) fn effective_deadline(
+    context: &ProviderCallContext,
+    config: &ProviderHttpConfig,
+) -> Instant {
     context
         .deadline
         .min(Instant::now() + Duration::from_millis(config.overall_timeout_ms))
 }
 
 /// Computes one finite attempt timeout that cannot exceed the operation deadline.
-fn request_timeout(
+pub(crate) fn request_timeout(
     config: &ProviderHttpConfig,
     deadline: Instant,
 ) -> Result<Duration, ProviderError> {
@@ -845,7 +850,7 @@ fn request_timeout(
 }
 
 /// Requires a non-empty caller-owned credential whenever auth is configured.
-fn require_credential(
+pub(crate) fn require_credential(
     config: &ProviderHttpConfig,
     credential: Option<&ProviderCredential>,
 ) -> Result<(), ProviderError> {
@@ -872,7 +877,7 @@ fn idempotency_header(
 }
 
 /// Creates safe provider result metadata.
-fn provider_metadata(
+pub(crate) fn provider_metadata(
     config: &ProviderHttpConfig,
     remote_request_id: Option<String>,
     started_at: chrono::DateTime<Utc>,
@@ -1412,6 +1417,7 @@ mod tests {
                 supports_speaker_labels: false,
                 supports_confidence: false,
                 supports_remote_cancel: false,
+                supports_remote_urls: false,
                 replay_safety,
             },
         }

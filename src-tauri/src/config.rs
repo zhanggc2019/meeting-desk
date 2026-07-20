@@ -3,6 +3,8 @@ use crate::domain::{ProviderReadiness, PublicProviderConfig, PublicSettings};
 pub const PRESET_MOCK: &str = "mock";
 pub const PRESET_DASHSCOPE_FUNASR_CN: &str = "dashscope_funasr_cn";
 pub const PRESET_DASHSCOPE_FUNASR_INTL: &str = "dashscope_funasr_intl";
+pub const PRESET_XIAOMI_MIMO_ASR: &str = "xiaomi_mimo_asr";
+pub const PRESET_VOLCENGINE_ASR_FLASH: &str = "volcengine_asr_flash";
 pub const PRESET_DEEPSEEK: &str = "deepseek";
 pub const PRESET_ALIYUN_BAILIAN: &str = "aliyun_bailian";
 pub const PRESET_CUSTOM_OPENAI: &str = "custom_openai_compatible";
@@ -11,6 +13,9 @@ pub const DASHSCOPE_FUNASR_CN_ENDPOINT: &str =
     "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription";
 pub const DASHSCOPE_FUNASR_INTL_ENDPOINT: &str =
     "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription";
+pub const XIAOMI_MIMO_ASR_ENDPOINT: &str = "https://api.xiaomimimo.com/v1/chat/completions";
+pub const VOLCENGINE_ASR_FLASH_ENDPOINT: &str =
+    "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
 pub const DEEPSEEK_ENDPOINT: &str = "https://api.deepseek.com/chat/completions";
 pub const ALIYUN_BAILIAN_ENDPOINT: &str =
     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
@@ -68,6 +73,8 @@ fn infer_preset_from_endpoint(endpoint: &str, fallback: &str) -> String {
     match endpoint.trim() {
         DASHSCOPE_FUNASR_CN_ENDPOINT => PRESET_DASHSCOPE_FUNASR_CN.to_string(),
         DASHSCOPE_FUNASR_INTL_ENDPOINT => PRESET_DASHSCOPE_FUNASR_INTL.to_string(),
+        XIAOMI_MIMO_ASR_ENDPOINT => PRESET_XIAOMI_MIMO_ASR.to_string(),
+        VOLCENGINE_ASR_FLASH_ENDPOINT => PRESET_VOLCENGINE_ASR_FLASH.to_string(),
         DEEPSEEK_ENDPOINT => PRESET_DEEPSEEK.to_string(),
         ALIYUN_BAILIAN_ENDPOINT => PRESET_ALIYUN_BAILIAN.to_string(),
         "" => fallback.to_string(),
@@ -121,7 +128,7 @@ pub fn evaluate_provider_readiness(mut provider: PublicProviderConfig) -> Public
 
     let supported_kind = matches!(
         provider.kind.as_str(),
-        "dashscope_funasr" | "openai_compatible"
+        "dashscope_funasr" | "xiaomi_mimo" | "volcengine_asr" | "openai_compatible"
     );
     if supported_kind && missing.is_empty() {
         provider.ready = true;
@@ -276,12 +283,39 @@ mod tests {
         assert!(evaluate_provider_readiness(value).ready);
     }
 
+    /// 验证 Xiaomi MiMo 与火山引擎转写类型可进入真实 Provider 就绪状态。
+    #[test]
+    fn accepts_new_managed_asr_provider_readiness() {
+        let mut mimo = provider(XIAOMI_MIMO_ASR_ENDPOINT, "mimo-v2.5-asr", true);
+        mimo.kind = "xiaomi_mimo".to_string();
+        mimo.preset_id = PRESET_XIAOMI_MIMO_ASR.to_string();
+        assert!(evaluate_provider_readiness(mimo).ready);
+
+        let mut volc = provider(VOLCENGINE_ASR_FLASH_ENDPOINT, "bigmodel", true);
+        volc.kind = "volcengine_asr".to_string();
+        volc.preset_id = PRESET_VOLCENGINE_ASR_FLASH.to_string();
+        assert!(evaluate_provider_readiness(volc).ready);
+    }
+
     /// 验证百炼集中式 Chat Completions 地址能被精确识别为托管预设。
     #[test]
     fn infers_aliyun_bailian_managed_preset() {
         assert_eq!(
             infer_preset_from_endpoint(ALIYUN_BAILIAN_ENDPOINT, PRESET_CUSTOM_OPENAI),
             PRESET_ALIYUN_BAILIAN
+        );
+    }
+
+    /// 验证新增转写端点只能通过精确官方地址识别为托管预设。
+    #[test]
+    fn infers_new_managed_asr_presets_from_exact_endpoints() {
+        assert_eq!(
+            infer_preset_from_endpoint(XIAOMI_MIMO_ASR_ENDPOINT, PRESET_CUSTOM_OPENAI),
+            PRESET_XIAOMI_MIMO_ASR
+        );
+        assert_eq!(
+            infer_preset_from_endpoint(VOLCENGINE_ASR_FLASH_ENDPOINT, PRESET_CUSTOM_OPENAI),
+            PRESET_VOLCENGINE_ASR_FLASH
         );
     }
 

@@ -790,3 +790,49 @@ Phase 2 已在 `src-tauri/src/providers/**` 实现：
 Provider 测试覆盖：mock 完整候选流程与取消、空转写、401 不重试、429 后成功、5xx 有限重试、发送前网络错误重试、HTTP executor 强制取消、非法响应、显式 minutes 模板/响应路径、重放安全、Retry-After 上限、endpoint 校验，以及 credential/transcript/segment/minutes/response body 的 Debug/错误遮蔽。
 
 当前没有调用真实 API，也没有独立进程 mock server 或 `src-tauri/tests` 外部集成测试；HTTP 行为通过公开 `HttpExecutor` 边界和 scripted executor 验证。真实 multipart 网络互操作、企业代理、自签 CA、真实状态/响应结构与远端取消仍属于 Phase 4 验证项。
+
+## 18. Xiaomi MiMo 与火山引擎录音文件 ASR 契约（2026-07-20）
+
+本节只记录 2026-07-20 从厂商官方文档核对并在本地 scripted executor 中固化的字段。没有使用真实 Key 调用，不把 contract test 记为真实互操作测试。
+
+### 18.1 Xiaomi MiMo V2.5 ASR
+
+官方来源：
+
+- [Speech Recognition API Reference](https://platform.xiaomimimo.com/static/docs/api/audio/Speech-Recognition.md)
+- [Speech Recognition Usage Guide](https://platform.xiaomimimo.com/static/docs/usage-guide/Speech-Recognition.md)
+- [Model and Rate Limit](https://platform.xiaomimimo.com/static/docs/quick-start/model.md)
+
+已固化事实：
+
+- 端点：`POST https://api.xiaomimimo.com/v1/chat/completions`；模型固定为 `mimo-v2.5-asr`。
+- 鉴权支持 `Authorization: Bearer` 或 `api-key`；托管预设选择 Bearer，Key 只由 HTTP transport 注入。
+- 请求使用 `messages[0].content[0].input_audio.data`，值为 `data:{MIME_TYPE};base64,...`；只允许单个 MP3/WAV。
+- Base64 编码后的 data URL 不得超过 10 MB。适配器按十进制 10,000,000 字节做保守预检，对最长 MIME 前缀计算出的原文件上限为 7,499,982 字节。
+- `asr_options.language` 只允许 `auto`、`zh`、`en`；非流式文本位于 `choices[0].message.content`，请求 ID 取响应 `id`。
+- 官方响应未定义中立契约所需的分句时间戳、说话人或置信度，因此这些能力保持 `false`，不得伪造。
+
+### 18.2 火山引擎录音文件识别极速版
+
+官方来源：
+
+- [录音文件极速版识别 HTTP](https://www.volcengine.com/docs/6561/1631584)
+- [录音文件识别标准版 HTTP](https://www.volcengine.com/docs/6561/1354868)（字段与 URL 模式交叉核对）
+
+选择极速版是因为它面向非实时录音文件，单次请求直接返回结果，不需要 submit/query 轮询；同时支持本地文件 Base64 和 Provider 侧拉取 URL，符合本项目的文件转写边界。
+
+已固化事实：
+
+- 端点：`POST https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash`；`request.model_name=bigmodel`。
+- 新版控制台鉴权使用单个 `X-Api-Key`；资源 ID 固定为 `volc.bigasr.auc_turbo`。适配器还发送随机操作 ID 对应的 `X-Api-Request-Id` 和固定 `X-Api-Sequence: -1`。
+- 本地文件使用 `audio.data=<raw base64>`；URL 文件使用 `audio.url=<validated https URL>`，二者均发送明确 `audio.format`。
+- 极速版文档限制为最长 2 小时、最大 100 MB，格式为 WAV/MP3/OGG OPUS。已知本地元数据和 URL 元数据会在请求前校验；URL 元数据未知时不伪装成已验证。
+- 业务成功码来自响应 Header `X-Api-Status-Code: 20000000`，远程诊断 ID 只保留 `X-Tt-Logid`；响应正文全文位于 `result.text`，分句位于 `result.utterances`，时间单位为毫秒。
+- `550xxxx` 映射为可重试的 Provider 故障，但由于未验证请求发送后的幂等性，adapter 内不会自动重放已发送请求；由上层显式重试。
+- 旧控制台需要 App ID + Access Token 两个值，当前秘密槽位只有一个 Key，因此托管预设明确只支持新版控制台，不复用或拼接双凭据。
+
+### 18.3 URL 安全边界
+
+`RemoteAudioFile` 只接受 HTTPS，不允许 URL 用户名、密码或 fragment，长度上限为 8192。预签名 URL 可以保留 query，但整个 URL 在 `Debug`、错误和普通日志中始终显示为 `[REDACTED]`。应用不在本地抓取该 URL；支持 URL 的 Provider 将它作为敏感请求正文交给供应商拉取。
+
+`TranscriptionCapabilities.supportsRemoteUrls` 明确区分 Provider 是否支持 URL。mock provider 已覆盖 URL 流程；火山引擎为 `true`，MiMo 和通用 multipart adapter 为 `false`。当前稳定 IPC 和桌面 UI 仍只接受用户选择的本地文件，URL 输入的前端类型、持久化生命周期和任务创建命令需要单独阶段验收后开放。

@@ -91,7 +91,7 @@ pnpm tauri:dev
 ## 使用流程
 
 1. 启动应用，按照首页引导打开“服务设置”。
-2. 在“服务设置”中分别配置 FunASR 和会议纪要服务；两项未就绪前不能选择媒体。
+2. 在“服务设置”中分别配置语音转写和会议纪要服务；两项未就绪前不能选择媒体。
 3. 选择“单个文件”或“批量处理”。
 4. 选择一个或多个本地音频/视频，批量模式下还可以继续追加。
 5. 选择纪要模板并创建任务。
@@ -107,6 +107,8 @@ pnpm tauri:dev
 | 用途 | 内置预设 | 模型 |
 | --- | --- | --- |
 | 语音转写 | 阿里云百炼 Fun-ASR（中国内地 / 国际） | `fun-asr`、`fun-asr-mtl` |
+| 语音转写 | Xiaomi MiMo | `mimo-v2.5-asr` |
+| 语音转写 | 火山引擎录音文件识别（极速版，新控制台） | `bigmodel` |
 | 会议纪要 | DeepSeek | `deepseek-v4-flash`、`deepseek-v4-pro` |
 | 会议纪要 | 阿里云百炼（通义千问） | `qwen-plus`、`qwen-flash`、`qwen-max` |
 | 会议纪要 | 第三方 OpenAI-compatible | 自定义完整 Chat Completions 地址与模型名 |
@@ -120,6 +122,14 @@ API Key 的处理原则：
 - 保存成功后不回显。
 - 不写入 Git、`.env.example`、SQLite、前端日志或会议日志。
 - 密钥绑定到具体 Provider 预设；切换服务商时不会静默复用旧密钥。
+
+MiMo 与火山引擎录音文件适配边界：
+
+- Xiaomi MiMo 使用官方 Chat Completions 端点，只接受 MP3/WAV；音频会在受信任 Rust 后端转换为 data URL，编码后的完整值不得超过 10 MB。
+- 火山引擎使用录音文件极速版 HTTP 端点，支持本地文件 Base64 与 Provider 侧拉取 HTTPS 文件 URL；本地文件上限为 100 MB、2 小时。
+- 火山引擎预设使用新版控制台的单 `X-Api-Key`。旧版控制台的 App ID + Access Token 双凭据未接入，不会把单个输入框伪装成双凭据支持。
+- URL 可能包含临时签名参数，Provider DTO 的调试输出会完整遮蔽 URL。当前桌面 UI/IPC 仍只提供本地文件选择，尚未开放 URL 输入控件。
+- 以上真实 HTTP 契约通过脚本化 mock executor 验证；仓库未包含真实 Key，也未把文档核对描述成真实账号互操作测试。
 
 `.env.example` 仅用于说明高级环境变量，不会被应用自动加载。普通用户应优先通过应用内设置完成配置。
 
@@ -224,6 +234,8 @@ docs/                      架构、API、安全、测试和 UI 文档
 ## 已知限制
 
 - 真实 Fun-ASR 媒体上传、异步任务轮询和响应归一化尚未实现。
+- Xiaomi MiMo 与火山引擎适配器、预设和 mock HTTP 合约已实现，但真实任务编排总闸门仍未开放；当前版本不会上传真实录音。
+- 火山引擎 Provider 已支持 HTTPS 文件 URL，桌面端 URL 导入的 IPC、持久化和界面尚未实现。
 - DeepSeek、阿里云百炼及第三方兼容服务的真实请求与结构化响应仍未使用有效密钥完成互操作验证。
 - 长转写的 map/reduce 分块总结尚未实现。
 - MP3 导入校验暂不计算时长。

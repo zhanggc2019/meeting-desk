@@ -116,6 +116,123 @@ pub struct TranscriptionRequest {
     pub options: TranscriptionOptions,
 }
 
+/// Provider-supported format identifiers for one HTTPS recording-file URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteAudioFormat {
+    Wav,
+    Mp3,
+    Ogg,
+    Opus,
+    M4a,
+}
+
+impl RemoteAudioFormat {
+    /// Returns the stable provider-facing format value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Wav => "wav",
+            Self::Mp3 => "mp3",
+            Self::Ogg => "ogg",
+            Self::Opus => "opus",
+            Self::M4a => "m4a",
+        }
+    }
+}
+
+/// A validated remote recording reference whose potentially signed URL is always redacted.
+#[derive(Clone)]
+pub struct RemoteAudioFile {
+    pub id: String,
+    url: reqwest::Url,
+    pub format: RemoteAudioFormat,
+    pub byte_length: Option<u64>,
+    pub duration_ms: Option<u64>,
+}
+
+impl RemoteAudioFile {
+    /// Validates one HTTPS file URL without fetching it or exposing query parameters.
+    pub fn new(
+        id: impl Into<String>,
+        url: &str,
+        format: RemoteAudioFormat,
+        byte_length: Option<u64>,
+        duration_ms: Option<u64>,
+    ) -> Result<Self, ProviderError> {
+        let id = id.into();
+        if id.trim().is_empty() {
+            return Err(ProviderError::input(
+                "invalid_remote_audio_url",
+                "远程录音标识不能为空",
+            ));
+        }
+        let url = reqwest::Url::parse(url).map_err(|_| {
+            ProviderError::input("invalid_remote_audio_url", "录音文件 URL 格式无效")
+        })?;
+        if url.scheme() != "https"
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+            || url.host_str().is_none()
+        {
+            return Err(ProviderError::input(
+                "invalid_remote_audio_url",
+                "录音文件 URL 必须使用 HTTPS，且不得包含用户凭据或片段",
+            ));
+        }
+        if url.as_str().len() > 8_192 {
+            return Err(ProviderError::input(
+                "invalid_remote_audio_url",
+                "录音文件 URL 过长",
+            ));
+        }
+        Ok(Self {
+            id,
+            url,
+            format,
+            byte_length,
+            duration_ms,
+        })
+    }
+
+    /// Exposes the validated URL only inside the trusted provider request builder.
+    pub(crate) fn url(&self) -> &reqwest::Url {
+        &self.url
+    }
+}
+
+impl fmt::Debug for RemoteAudioFile {
+    /// Formats only safe metadata and never the remote URL or its signed query.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RemoteAudioFile")
+            .field("id", &self.id)
+            .field("url", &"[REDACTED]")
+            .field("format", &self.format)
+            .field("byte_length", &self.byte_length)
+            .field("duration_ms", &self.duration_ms)
+            .finish()
+    }
+}
+
+/// Provider-neutral request for a provider-fetched HTTPS recording file.
+#[derive(Clone)]
+pub struct UrlTranscriptionRequest {
+    pub audio: RemoteAudioFile,
+    pub options: TranscriptionOptions,
+}
+
+impl fmt::Debug for UrlTranscriptionRequest {
+    /// Formats safe metadata while preserving URL redaction.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UrlTranscriptionRequest")
+            .field("audio", &self.audio)
+            .field("options", &self.options)
+            .finish()
+    }
+}
+
 impl fmt::Debug for TranscriptionRequest {
     /// Formats safe request metadata without file paths or content.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -248,6 +365,8 @@ pub struct TranscriptionCapabilities {
     pub supports_speaker_labels: bool,
     pub supports_confidence: bool,
     pub supports_remote_cancel: bool,
+    #[serde(default)]
+    pub supports_remote_urls: bool,
     pub replay_safety: ReplaySafety,
 }
 
@@ -308,6 +427,19 @@ pub trait TranscriptionProvider: Send + Sync {
         request: TranscriptionRequest,
         credential: Option<&ProviderCredential>,
     ) -> Result<Transcript, ProviderError>;
+
+    /// Transcribes one provider-fetched HTTPS recording URL when explicitly supported.
+    async fn transcribe_url(
+        &self,
+        _context: &ProviderCallContext,
+        _request: UrlTranscriptionRequest,
+        _credential: Option<&ProviderCredential>,
+    ) -> Result<Transcript, ProviderError> {
+        Err(ProviderError::input(
+            "remote_url_unsupported",
+            "当前 Provider 不支持录音文件 URL",
+        ))
+    }
 }
 
 /// Provider-neutral meeting-minutes generation behavior.
@@ -330,7 +462,10 @@ mod tests {
     use chrono::Utc;
     use serde_json::json;
 
-    use super::{MinutesCandidate, ProviderMetadata, Transcript, TranscriptSegment};
+    use super::{
+        MinutesCandidate, ProviderMetadata, RemoteAudioFile, RemoteAudioFormat, Transcript,
+        TranscriptSegment,
+    };
 
     /// Creates safe provider metadata for Debug redaction tests.
     fn metadata() -> ProviderMetadata {
@@ -372,5 +507,29 @@ mod tests {
         assert!(!rendered.contains("sentinel-transcript-body"));
         assert!(!rendered.contains("sentinel-segment-body"));
         assert!(!rendered.contains("sentinel-minutes-body"));
+    }
+
+    /// Verifies signed query values never appear in remote audio Debug output.
+    #[test]
+    fn remote_audio_url_is_validated_and_redacted() {
+        let audio = RemoteAudioFile::new(
+            "remote-1",
+            "https://media.example.test/recording.mp3?signature=test-only-sentinel",
+            RemoteAudioFormat::Mp3,
+            None,
+            None,
+        )
+        .expect("valid HTTPS recording URL");
+        let rendered = format!("{audio:?}");
+        assert!(!rendered.contains("test-only-sentinel"));
+        assert!(!rendered.contains("media.example.test"));
+        assert!(RemoteAudioFile::new(
+            "remote-2",
+            "http://media.example.test/recording.mp3",
+            RemoteAudioFormat::Mp3,
+            None,
+            None,
+        )
+        .is_err());
     }
 }

@@ -155,12 +155,19 @@ export interface MeetingDetail {
   transcript: Transcript;
 }
 
-export type ProviderKind = "mock" | "dashscope_funasr" | "openai_compatible";
+export type ProviderKind =
+  | "mock"
+  | "dashscope_funasr"
+  | "xiaomi_mimo"
+  | "volcengine_asr"
+  | "openai_compatible";
 export type ProviderReadiness = "incomplete" | "mockExperience" | "ready";
 export type ProviderPresetId =
   | "mock"
   | "dashscope_funasr_cn"
   | "dashscope_funasr_intl"
+  | "xiaomi_mimo_asr"
+  | "volcengine_asr_flash"
   | "deepseek"
   | "aliyun_bailian"
   | "custom_openai_compatible";

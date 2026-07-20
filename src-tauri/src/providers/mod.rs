@@ -1,5 +1,6 @@
 //! Provider-agnostic cloud API contracts, mocks, and configurable HTTP adapters.
 
+mod base64_audio;
 mod cancellation;
 mod contract;
 mod error;
@@ -8,14 +9,16 @@ mod mock;
 mod openai_compatible;
 mod retry;
 mod secret;
+mod volcengine;
+mod xiaomi_mimo;
 
 pub use cancellation::CancellationToken;
 pub use contract::{
     AudioArtifactReader, AudioArtifactRef, CapabilityEvidence, ManagedAudioArtifact,
     MinutesCandidate, MinutesCapabilities, MinutesGenerationRequest, MinutesProvider,
-    OperationOutcome, ProviderCallContext, ProviderMetadata, ReplaySafety, StagingMetadata,
-    Transcript, TranscriptSegment, TranscriptionCapabilities, TranscriptionOptions,
-    TranscriptionProvider, TranscriptionRequest,
+    OperationOutcome, ProviderCallContext, ProviderMetadata, RemoteAudioFile, RemoteAudioFormat,
+    ReplaySafety, StagingMetadata, Transcript, TranscriptSegment, TranscriptionCapabilities,
+    TranscriptionOptions, TranscriptionProvider, TranscriptionRequest, UrlTranscriptionRequest,
 };
 pub use error::{ProviderError, ProviderErrorCategory};
 pub use http::{
@@ -31,3 +34,5 @@ pub use openai_compatible::{
 };
 pub use retry::RetryPolicy;
 pub use secret::ProviderCredential;
+pub use volcengine::VolcengineFlashTranscriptionProvider;
+pub use xiaomi_mimo::XiaomiMimoTranscriptionProvider;

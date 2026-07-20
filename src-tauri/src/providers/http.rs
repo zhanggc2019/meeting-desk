@@ -243,6 +243,7 @@ pub struct ProviderHttpRequest {
     pub method: HttpMethod,
     pub endpoint: Url,
     pub body: ProviderHttpBody,
+    pub headers: BTreeMap<String, String>,
     pub timeout: Duration,
     pub max_response_bytes: u64,
     pub response_header_allowlist: Vec<String>,
@@ -257,6 +258,7 @@ impl fmt::Debug for ProviderHttpRequest {
             .field("method", &self.method)
             .field("endpoint", &"[REDACTED]")
             .field("body", &self.body)
+            .field("header_count", &self.headers.len())
             .field("timeout", &self.timeout)
             .field("max_response_bytes", &self.max_response_bytes)
             .field(
@@ -531,6 +533,21 @@ impl HttpExecutor for ReqwestHttpExecutor {
         .timeout(request.timeout);
 
         builder = Self::apply_authentication(builder, credential, auth)?;
+        for (name, value) in &request.headers {
+            if is_sensitive_managed_header(name) {
+                return Err(TransportError::new(
+                    TransportErrorKind::RequestBuild,
+                    OperationOutcome::NotSent,
+                ));
+            }
+            let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+                TransportError::new(TransportErrorKind::RequestBuild, OperationOutcome::NotSent)
+            })?;
+            let header_value = HeaderValue::from_str(value).map_err(|_| {
+                TransportError::new(TransportErrorKind::RequestBuild, OperationOutcome::NotSent)
+            })?;
+            builder = builder.header(header_name, header_value);
+        }
         if let Some((name, value)) = &request.idempotency {
             let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
                 TransportError::new(TransportErrorKind::RequestBuild, OperationOutcome::NotSent)
@@ -603,6 +620,14 @@ impl HttpExecutor for ReqwestHttpExecutor {
 
         Ok(RawHttpResponse::new(status, headers, body))
     }
+}
+
+/// Prevents provider codecs from bypassing the credential injection boundary.
+fn is_sensitive_managed_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization" | "cookie" | "x-api-key" | "x-api-access-key"
+    )
 }
 
 /// Maps a non-success HTTP response into the stable sanitized error contract.

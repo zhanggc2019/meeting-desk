@@ -11,7 +11,7 @@ use super::{
     CapabilityEvidence, MinutesCandidate, MinutesCapabilities, MinutesGenerationRequest,
     MinutesProvider, OperationOutcome, ProviderCallContext, ProviderCredential, ProviderError,
     ProviderErrorCategory, ProviderMetadata, ReplaySafety, Transcript, TranscriptionCapabilities,
-    TranscriptionProvider, TranscriptionRequest,
+    TranscriptionProvider, TranscriptionRequest, UrlTranscriptionRequest,
 };
 
 /// Deterministic mock scenarios available without a network or API key.
@@ -282,6 +282,7 @@ impl TranscriptionProvider for MockProvider {
             supports_speaker_labels: false,
             supports_confidence: false,
             supports_remote_cancel: true,
+            supports_remote_urls: true,
             replay_safety: ReplaySafety::VerifiedAlwaysSafe,
         }
     }
@@ -323,6 +324,46 @@ impl TranscriptionProvider for MockProvider {
             context,
             artifact_id,
             "transcription",
+            started_at,
+            result_outcome(&result),
+        );
+        result
+    }
+
+    /// Returns a deterministic transcript for a validated remote URL without fetching it.
+    async fn transcribe_url(
+        &self,
+        context: &ProviderCallContext,
+        request: UrlTranscriptionRequest,
+        _credential: Option<&ProviderCredential>,
+    ) -> Result<Transcript, ProviderError> {
+        let started_at = Utc::now();
+        let artifact_id = Some(request.audio.id.clone());
+        let result = async {
+            self.apply_timing(context).await?;
+            if self.config.scenario == MockScenario::EmptyTranscript {
+                return Err(ProviderError::protocol(
+                    "empty_transcript",
+                    "Mock 返回了空转写",
+                ));
+            }
+            if let Some(error) = self.scenario_error() {
+                return Err(error);
+            }
+            Ok(Transcript {
+                schema_version: "1".to_owned(),
+                text: self.transcript_text.clone(),
+                language: None,
+                duration_ms: request.audio.duration_ms,
+                segments: Vec::new(),
+                provider_metadata: self.metadata(started_at),
+            })
+        }
+        .await;
+        self.record_call(
+            context,
+            artifact_id,
+            "url_transcription",
             started_at,
             result_outcome(&result),
         );
@@ -426,8 +467,8 @@ mod tests {
     use crate::ingest::AudioSourceKind;
     use crate::providers::{
         AudioArtifactRef, CancellationToken, ManagedAudioArtifact, MinutesGenerationRequest,
-        MinutesProvider, ProviderCallContext, StagingMetadata, TranscriptionOptions,
-        TranscriptionProvider, TranscriptionRequest,
+        MinutesProvider, ProviderCallContext, RemoteAudioFile, RemoteAudioFormat, StagingMetadata,
+        TranscriptionOptions, TranscriptionProvider, TranscriptionRequest, UrlTranscriptionRequest,
     };
 
     /// Creates a deterministic mock provider with short non-sensitive fixtures.
@@ -502,6 +543,36 @@ mod tests {
             .expect("mock candidate should succeed");
         assert_eq!(candidate.value["schemaVersion"], "1.0.0");
         assert_eq!(provider.call_records().len(), 2);
+    }
+
+    /// Verifies the mock covers provider-fetched HTTPS recording URLs without network access.
+    #[tokio::test]
+    async fn mock_success_returns_url_transcript() {
+        let provider = provider(MockScenario::Success, 0);
+        let transcript = provider
+            .transcribe_url(
+                &context(CancellationToken::new()),
+                UrlTranscriptionRequest {
+                    audio: RemoteAudioFile::new(
+                        "remote-test",
+                        "https://media.example.test/meeting.mp3?signature=test-only",
+                        RemoteAudioFormat::Mp3,
+                        None,
+                        Some(100),
+                    )
+                    .expect("valid URL fixture"),
+                    options: TranscriptionOptions::default(),
+                },
+                None,
+            )
+            .await
+            .expect("mock URL transcript should succeed");
+        assert_eq!(transcript.text, "short fixture transcript");
+        assert_eq!(transcript.duration_ms, Some(100));
+        assert_eq!(
+            provider.call_records()[0].operation_kind,
+            "url_transcription"
+        );
     }
 
     /// Verifies that cancellation interrupts a delayed mock and records no fixture content.

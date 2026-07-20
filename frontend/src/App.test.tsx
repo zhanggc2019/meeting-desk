@@ -161,6 +161,14 @@ describe("Windows 离线媒体工作台", () => {
     expect(within(screen.getByLabelText("语音转写模型")).getByRole("option", { name: "fun-asr-mtl" })).toBeInTheDocument();
     expect(screen.getAllByText("官方地址由软件维护").length).toBeGreaterThan(0);
 
+    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "xiaomi_mimo_asr");
+    expect(screen.queryByLabelText("语音转写服务地址")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("语音转写模型")).toHaveValue("mimo-v2.5-asr");
+
+    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "volcengine_asr_flash");
+    expect(screen.queryByLabelText("语音转写服务地址")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("语音转写模型")).toHaveValue("bigmodel");
+
     await user.selectOptions(screen.getByLabelText("会议纪要服务商"), "deepseek");
     expect(screen.queryByLabelText("会议纪要服务地址")).not.toBeInTheDocument();
     expect(screen.getByLabelText("会议纪要模型")).toHaveValue("deepseek-v4-flash");
@@ -175,6 +183,36 @@ describe("Windows 离线媒体工作台", () => {
     expect(screen.getByLabelText("会议纪要服务地址")).toBeInTheDocument();
     expect(screen.getByLabelText("会议纪要模型")).toHaveAttribute("placeholder", "输入已验证的模型名");
     expect(screen.queryByRole("option", { name: /Mock/ })).not.toBeInTheDocument();
+  });
+
+  it("保存 Xiaomi MiMo 与火山引擎托管转写预设时使用固定字段", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const saveSettings = vi.spyOn(client, "saveProviderSettings");
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "设置" }));
+
+    await user.selectOptions(await screen.findByLabelText("语音转写服务商"), "xiaomi_mimo_asr");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    expect(saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
+      transcription: expect.objectContaining({
+        presetId: "xiaomi_mimo_asr",
+        kind: "xiaomi_mimo",
+        endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
+        model: "mimo-v2.5-asr",
+      }),
+    }));
+
+    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "volcengine_asr_flash");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    expect(saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
+      transcription: expect.objectContaining({
+        presetId: "volcengine_asr_flash",
+        kind: "volcengine_asr",
+        endpoint: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash",
+        model: "bigmodel",
+      }),
+    }));
   });
 
   it("默认使用 DeepSeek 推荐模型保存参数且不回显密钥", async () => {
