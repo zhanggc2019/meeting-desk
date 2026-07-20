@@ -1,4 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="8" fill="#b7ead8"/>
-  <path d="M10 10v12M14 8v16M18 11v10M22 13v6" stroke="#0d5d49" stroke-width="2.4" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="听见纪要 Logo">
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="#0d5d49"/>
+  <path d="M312 160h304l168 168v472c0 44.2-35.8 80-80 80H312c-44.2 0-80-35.8-80-80V240c0-44.2 35.8-80 80-80Z" fill="#ffffff"/>
+  <path d="M616 160v112c0 30.9 25.1 56 56 56h112" fill="#b7ead8"/>
+  <path d="M616 160v112c0 30.9 25.1 56 56 56h112" fill="none" stroke="#0d5d49" stroke-width="32" stroke-linejoin="round"/>
+  <path d="M360 568v112M456 488v272M552 532v184M648 592v64" fill="none" stroke="#ff765c" stroke-width="52" stroke-linecap="round"/>
 </svg>

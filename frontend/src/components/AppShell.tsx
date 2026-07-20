@@ -24,8 +24,8 @@ export function AppShell({ children }: AppShellProps) {
   return (
     <div className="app-shell">
       <aside className="app-sidebar" aria-label="主导航">
-        <div className="brand-block" aria-label="听见纪要">
-          <span className="brand-mark" aria-hidden="true">听</span>
+        <div className="brand-block">
+          <img className="brand-mark" src="/favicon.svg" alt="听见纪要 Logo" />
           <span className="brand-copy">
             <strong>听见纪要</strong>
             <small>媒体工作台</small>

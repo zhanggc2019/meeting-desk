@@ -85,15 +85,10 @@ select:focus-visible,
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
+  display: block;
   width: 31px;
   height: 31px;
-  color: #fff;
-  background: var(--accent);
-  border-radius: 7px;
-  font-size: 14px;
-  font-weight: 750;
+  flex: 0 0 31px;
 }
 
 .brand-copy { display: flex; flex-direction: column; line-height: 1.25; }

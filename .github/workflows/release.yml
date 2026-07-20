@@ -64,11 +64,9 @@ jobs:
           tagName: v__VERSION__
           releaseName: 听见纪要 v__VERSION__
           releaseBody: |
-            - 新增 Xiaomi MiMo `mimo-v2.5-asr` 托管预设和专用转写适配器。
-            - 新增火山引擎录音文件识别极速版，支持本地 Base64 和 Provider 侧 HTTPS 文件 URL。
-            - 增加远程录音 URL 的安全校验、签名参数遮蔽、能力声明和 mock 测试。
-
-            当前真实任务编排总闸门仍未开放，桌面端 URL 输入控件也尚未接入；本版本不会上传真实录音或把未验证请求伪装为成功。
+            - 新增“听见纪要”原创应用 Logo，并统一用于窗口、安装器、可执行文件与网页图标。
+            - Windows 内部产品名调整为 `MeetingDesk`，新安装默认使用英文目录，中文界面名称保持不变。
+            - 保留 Xiaomi MiMo 与火山引擎离线文件 ASR 支持。
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true

@@ -50,6 +50,14 @@ describe("Windows 离线媒体工作台", () => {
     resetAppStore();
   });
 
+  it("显示听见纪要品牌 Logo", async () => {
+    render(<App client={createMockDesktopClient()} />);
+
+    await screen.findByText("季度复盘.wav");
+    const logo = screen.getByRole("img", { name: "听见纪要 Logo" });
+    expect(logo).toHaveAttribute("src", "/favicon.svg");
+  });
+
   it("校验单个文件并创建独立处理任务", async () => {
     const user = userEvent.setup();
     render(<App client={await createConfiguredClient()} />);
