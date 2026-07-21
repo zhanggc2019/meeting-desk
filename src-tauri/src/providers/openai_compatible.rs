@@ -207,6 +207,42 @@ pub struct MinutesHttpMapping {
     pub capabilities: MinutesCapabilities,
 }
 
+/// 构造标准 OpenAI Chat Completions 纪要映射，适用于 MiMo 及兼容三方服务。
+pub fn openai_chat_completions_minutes_mapping() -> MinutesHttpMapping {
+    MinutesHttpMapping {
+        method: HttpMethod::Post,
+        body_template: serde_json::json!({
+            "model": "__MODEL__",
+            "messages": [{"role": "user", "content": "__PROMPT__"}]
+        }),
+        model_placeholder: "__MODEL__".to_string(),
+        prompt_placeholder: "__PROMPT__".to_string(),
+        schema_placeholder: None,
+        response_content_path: JsonPath(vec![
+            JsonPathSegment::Key("choices".to_string()),
+            JsonPathSegment::Index(0),
+            JsonPathSegment::Key("message".to_string()),
+            JsonPathSegment::Key("content".to_string()),
+        ]),
+        response_content_mode: JsonContentMode::JsonEncodedString,
+        remote_request_id_header: Some("x-request-id".to_string()),
+        capabilities: standard_openai_minutes_capabilities(),
+    }
+}
+
+/// 返回兼容协议的保守能力声明，不推测供应商输入上限或远程取消能力。
+fn standard_openai_minutes_capabilities() -> MinutesCapabilities {
+    MinutesCapabilities {
+        evidence: CapabilityEvidence::Unverified,
+        supports_json_schema: false,
+        supported_schema_versions: Vec::new(),
+        max_input_characters: None,
+        supports_async_jobs: false,
+        supports_remote_cancel: false,
+        replay_safety: super::ReplaySafety::NeverAutomaticallyReplay,
+    }
+}
+
 impl MinutesHttpMapping {
     /// Validates placeholders and response mappings without imposing provider JSON fields.
     pub fn validate(&self) -> Result<(), ProviderError> {
@@ -1265,9 +1301,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        JsonContentMode, JsonPath, MinutesHttpMapping, OpenAiCompatibleMinutesProvider,
-        OpenAiCompatibleTranscriptionProvider, TranscriptionHttpMapping,
-        TranscriptionResponseMapping,
+        openai_chat_completions_minutes_mapping, JsonContentMode, JsonPath, MinutesHttpMapping,
+        OpenAiCompatibleMinutesProvider, OpenAiCompatibleTranscriptionProvider,
+        TranscriptionHttpMapping, TranscriptionResponseMapping,
     };
     use crate::ingest::AudioSourceKind;
     use crate::providers::{
@@ -1695,6 +1731,40 @@ mod tests {
             )
             .await
             .expect("candidate should parse");
+        assert_eq!(candidate.value["schemaVersion"], "1.0.0");
+    }
+
+    /// 验证 Chat Completions 映射发送 messages 并读取 message.content JSON。
+    #[tokio::test]
+    async fn chat_completions_profile_renders_and_parses_standard_contract() {
+        let executor = Arc::new(ScriptedExecutor::new(vec![Ok(RawHttpResponse::new(
+            200,
+            BTreeMap::new(),
+            serde_json::to_vec(&json!({
+                "choices": [{"message": {"content": "{\"schemaVersion\":\"1.0.0\"}"}}]
+            }))
+            .expect("fixture should serialize"),
+        ))]));
+        let provider = OpenAiCompatibleMinutesProvider::with_executor(
+            test_http_config(ReplaySafety::NeverAutomaticallyReplay),
+            openai_chat_completions_minutes_mapping(),
+            executor,
+        )
+        .expect("Chat Completions provider should build");
+        let request = MinutesGenerationRequest {
+            prompt: "short non-sensitive fixture".to_string(),
+            output_schema: json!({"type": "object"}),
+            schema_version: "1.0.0".to_string(),
+        };
+        let body = provider.render_body(&request).expect("body should render");
+        assert_eq!(body["model"], "test-model");
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], request.prompt);
+
+        let candidate = provider
+            .generate_candidate(&test_context(), request, Some(&test_credential()))
+            .await
+            .expect("Chat Completions response should parse");
         assert_eq!(candidate.value["schemaVersion"], "1.0.0");
     }
 

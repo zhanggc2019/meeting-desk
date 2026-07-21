@@ -6,7 +6,7 @@
 
 ## 项目状态
 
-当前版本为 `0.3.0`，适合桌面界面开发、配置流程验证和本地自动化测试。
+当前版本为 `0.3.1`，适合桌面界面开发、配置流程验证和本地自动化测试。
 
 - ✅ Tauri 2 桌面壳、React 界面和 SQLite 本地存储可运行。
 - ✅ 内部离线测试链路已贯通：`导入媒体 → 转写 → 生成纪要 → 保存 → 展示 → Markdown 预览/导出`；正式界面不提供演示模式。
@@ -15,7 +15,7 @@
 - ✅ 服务未配置完成时会禁用媒体选择，避免创建无法执行的任务。
 - ✅ 支持启动时静默检查 GitHub Release；发现签名更新后由用户确认下载、安装和重启。
 - ✅ GitHub Actions 可在 `main` 分支执行 Windows CI，并在 `v*` 标签上生成签名 NSIS 安装包和 `latest.json`。
-- ⚠️ 阿里云百炼 Fun-ASR、DeepSeek、阿里云百炼通义千问及第三方 OpenAI-compatible 预设已完成，但真实 API 互操作仍为 **BLOCKED**。当前版本不会把未验证的真实请求伪装为成功。
+- ⚠️ 阿里云百炼 Fun-ASR、Xiaomi MiMo、DeepSeek、阿里云百炼通义千问及第三方 OpenAI-compatible 预设已完成，但真实 API 互操作仍为 **BLOCKED**。当前版本不会把未验证的真实请求伪装为成功。
 
 ## 功能
 
@@ -24,6 +24,7 @@
 - 批量追加文件、逐项校验、独立创建任务。
 - 任务状态、取消、失败重试与重启恢复提示。
 - 本地会议历史、搜索、详情查看和复制。
+- 历史记录区分录音时长与总处理耗时；处理耗时不单独落库、不建立使用统计，只从任务恢复所需的既有创建/完成时间即时计算。
 - 完整逐字稿与结构化会议纪要。
 - Markdown 应用内渲染预览与 `.md` 文件导出。
 - 多种纪要模板：
@@ -109,11 +110,12 @@ pnpm tauri:dev
 | 语音转写 | 阿里云百炼 Fun-ASR（中国内地 / 国际） | `fun-asr`、`fun-asr-mtl` |
 | 语音转写 | Xiaomi MiMo | `mimo-v2.5-asr` |
 | 语音转写 | 火山引擎录音文件识别（极速版，新控制台） | `bigmodel` |
+| 会议纪要 | Xiaomi MiMo 大模型 | `mimo-v2.5`、`mimo-v2.5-pro` |
 | 会议纪要 | DeepSeek | `deepseek-v4-flash`、`deepseek-v4-pro` |
 | 会议纪要 | 阿里云百炼（通义千问） | `qwen-plus`、`qwen-flash`、`qwen-max` |
-| 会议纪要 | 第三方 OpenAI-compatible | 自定义完整 Chat Completions 地址与模型名 |
+| 会议纪要 | 第三方 OpenAI Chat Completions | 自定义完整地址与模型名，读取 `choices[0].message.content` |
 
-只有“自建 / 自定义（高级）”和“第三方 OpenAI-compatible”会显示可编辑的服务地址与模型名。托管预设的地址和模型白名单由 Rust 后端校验，前端不能覆盖。
+只有“自建 / 自定义（高级）”和第三方 OpenAI Chat Completions 预设会显示可编辑的服务地址与模型名。托管预设的地址和模型白名单由 Rust 后端校验，前端不能覆盖。MiMo ASR 与 MiMo 大模型共用官方 Chat Completions 地址，但分别使用独立预设、模型白名单和密钥绑定，不会根据 URL 混淆业务类型。
 
 API Key 的处理原则：
 
@@ -240,7 +242,7 @@ docs/                      架构、API、安全、测试和 UI 文档
 - 真实 Fun-ASR 媒体上传、异步任务轮询和响应归一化尚未实现。
 - Xiaomi MiMo 与火山引擎适配器、预设和 mock HTTP 合约已实现，但真实任务编排总闸门仍未开放；当前版本不会上传真实录音。
 - 火山引擎 Provider 已支持 HTTPS 文件 URL，桌面端 URL 导入的 IPC、持久化和界面尚未实现。
-- DeepSeek、阿里云百炼及第三方兼容服务的真实请求与结构化响应仍未使用有效密钥完成互操作验证。
+- Xiaomi MiMo、DeepSeek、阿里云百炼及第三方兼容服务的真实请求与结构化响应仍未使用有效密钥完成互操作验证。
 - 长转写的 map/reduce 分块总结尚未实现。
 - MP3 导入校验暂不计算时长。
 - 远端任务撤销需要在供应商契约验证后接入。

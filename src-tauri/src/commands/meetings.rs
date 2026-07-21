@@ -7,6 +7,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::app_state::AppState;
 use crate::commands::CommandError;
+use crate::domain::{TaskRecord, TaskStatus};
 use crate::minutes::{render_minutes_markdown, MeetingMinutes};
 
 /// 表示前端会议列表使用的摘要。
@@ -18,6 +19,7 @@ pub struct MeetingSummary {
     pub summary: Option<String>,
     pub meeting_start_at: Option<String>,
     pub duration_ms: Option<u64>,
+    pub processing_duration_ms: Option<u64>,
     pub updated_at: String,
     pub template_name: String,
 }
@@ -29,6 +31,7 @@ pub struct MeetingDetailResponse {
     pub id: String,
     pub template_name: String,
     pub duration_ms: Option<u64>,
+    pub processing_duration_ms: Option<u64>,
     pub created_at: String,
     pub minutes: Value,
     pub transcript: Value,
@@ -59,6 +62,7 @@ pub fn list_meetings(
 ) -> Result<Vec<MeetingSummary>, CommandError> {
     let normalized = query.unwrap_or_default().trim().to_lowercase();
     let items = state.repository.search_meetings("")?;
+    let tasks = state.repository.list_tasks()?;
     let mut summaries = Vec::new();
     for item in items {
         let Some(detail) = state.repository.get_meeting(&item.id)? else {
@@ -76,6 +80,7 @@ pub fn list_meetings(
         if !normalized.is_empty() && !haystack.contains(&normalized) {
             continue;
         }
+        let processing_duration_ms = processing_duration_for_meeting(&tasks, &detail.id);
         summaries.push(MeetingSummary {
             id: detail.id,
             title,
@@ -84,6 +89,7 @@ pub fn list_meetings(
                 .as_str()
                 .map(str::to_string),
             duration_ms: detail.transcript_segments["durationMs"].as_u64(),
+            processing_duration_ms,
             updated_at: detail.updated_at,
             template_name: template_name(&detail.template_id).to_string(),
         });
@@ -101,15 +107,39 @@ pub fn get_meeting_detail(
         .repository
         .get_meeting(&meeting_id)?
         .ok_or_else(|| CommandError::new("meeting_not_found", "未找到该会议记录", false))?;
+    let tasks = state.repository.list_tasks()?;
+    let processing_duration_ms = processing_duration_for_meeting(&tasks, &detail.id);
     let transcript = normalize_transcript(&detail.transcript, detail.transcript_segments);
     Ok(MeetingDetailResponse {
         id: detail.id,
         template_name: template_name(&detail.template_id).to_string(),
         duration_ms: transcript["durationMs"].as_u64(),
+        processing_duration_ms,
         created_at: detail.created_at,
         minutes: detail.minutes,
         transcript,
     })
+}
+
+/// 从恢复任务所需的现有生命周期快照即时计算指定会议的总处理耗时。
+fn processing_duration_for_meeting(tasks: &[TaskRecord], meeting_id: &str) -> Option<u64> {
+    tasks
+        .iter()
+        .find(|task| {
+            task.status == TaskStatus::Completed && task.meeting_id.as_deref() == Some(meeting_id)
+        })
+        .and_then(task_processing_duration_ms)
+}
+
+/// 计算单个完成任务的创建到完成墙钟差值，异常或倒退时间返回未知。
+fn task_processing_duration_ms(task: &TaskRecord) -> Option<u64> {
+    let created_at = chrono::DateTime::parse_from_rfc3339(&task.created_at).ok()?;
+    let updated_at = chrono::DateTime::parse_from_rfc3339(&task.updated_at).ok()?;
+    updated_at
+        .signed_duration_since(created_at)
+        .num_milliseconds()
+        .try_into()
+        .ok()
 }
 
 /// 返回与文件导出完全一致的 Markdown 文本，供应用内安全预览使用。
@@ -274,6 +304,7 @@ fn ensure_markdown_extension(path: &Path) -> Result<(), CommandError> {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::TaskAction;
     use crate::minutes::{MeetingTime, TitleSource};
 
     use super::*;
@@ -311,5 +342,35 @@ mod tests {
     #[test]
     fn sanitizes_export_file_name() {
         assert_eq!(safe_file_stem(Some("项目/周会")), "项目_周会");
+    }
+
+    /// 验证历史耗时只从匹配会议的已完成任务即时派生，不写入会议记录。
+    #[test]
+    fn derives_processing_duration_from_completed_task() {
+        let task = TaskRecord {
+            id: "task-1".to_string(),
+            artifact_id: "artifact-1".to_string(),
+            batch_id: None,
+            meeting_id: Some("meeting-1".to_string()),
+            display_name: "sample.wav".to_string(),
+            template_id: "standard_meeting".to_string(),
+            status: TaskStatus::Completed,
+            progress: Some(1.0),
+            attempt: 1,
+            max_attempts: 3,
+            error: None,
+            created_at: "2026-07-21T01:00:00Z".to_string(),
+            updated_at: "2026-07-21T01:02:03Z".to_string(),
+            available_actions: vec![TaskAction::OpenMeeting],
+        };
+
+        assert_eq!(
+            processing_duration_for_meeting(std::slice::from_ref(&task), "meeting-1"),
+            Some(123_000)
+        );
+        assert_eq!(
+            processing_duration_for_meeting(&[task], "other-meeting"),
+            None
+        );
     }
 }

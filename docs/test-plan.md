@@ -72,7 +72,7 @@
 | Secret | 前端 mock 测试验证输入清空/不回显；Credential wrapper Debug redaction；空 Key 后端忽略；`.env.example` 空值 | Windows Credential Manager 写/读/替换/删除/重启；IPC/内存生命周期；旧 Key 轮换 |
 | SQLite | 参数化 CRUD、转写/纪要事务、级联删除的内存测试 | 磁盘库、WAL/SHM、ACL、损坏/磁盘满、重启恢复、受管 artifact 联动删除 |
 | UI | 导入空态、未配置时禁用媒体、音频/视频批量列表、部分错误、任务取消确认、重新选择、详情/复制、无采集 UI | Tauri command 集成、真实错误码、导出、持久化重启、键盘/缩放/高对比度 |
-| 配置引导 | 单侧缺失、两侧真实就绪、打开设置、DeepSeek/百炼/第三方兼容切换 | Windows Credential Manager 重启后就绪状态与真实 Provider 契约验证 |
+| 配置引导 | 单侧缺失、两侧真实就绪、打开设置、MiMo/DeepSeek/百炼/第三方 Chat Completions 切换 | Windows Credential Manager 重启后就绪状态与真实 Provider 契约验证 |
 | Markdown 预览 | 后端预览与导出共用渲染器、标题/列表/表格/逐字稿、禁用 raw HTML | 超长逐字稿渲染性能、复制选择和打印布局 |
 | Packaging | release exe 与 NSIS 成功；bundle 未发现明显敏感附带文件 | 实际安装/启动/卸载、签名、UAC/权限、WebView2 缺失、SmartScreen/EDR |
 | Updater | `PASS`：前端静默检查/发现版本/下载进度/重启组件测试；Tauri 公钥、固定 GitHub endpoint、最小 capability；CI 与标签发布工作流；Release 三项资产已生成；匿名 `latest.json` 与安装包下载均为 HTTP 200 | 尚需补旧版到新版的真实安装升级、代理/断网和损坏签名回归 |

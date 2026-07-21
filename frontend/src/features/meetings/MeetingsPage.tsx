@@ -97,13 +97,14 @@ export function MeetingsPage() {
       {meetings.length > 0 ? (
         <div className="table-wrap meeting-table-wrap">
           <table>
-            <thead><tr><th>会议标题</th><th>会议时间</th><th>时长</th><th>模板</th><th><span className="visually-hidden">操作</span></th></tr></thead>
+            <thead><tr><th>会议标题</th><th>会议时间</th><th>录音时长</th><th>总处理耗时</th><th>模板</th><th><span className="visually-hidden">操作</span></th></tr></thead>
             <tbody>
               {meetings.map((item) => (
                 <tr key={item.id}>
                   <td><button className="meeting-title-link" type="button" onClick={() => openMeeting(item.id)}><strong>{item.title ?? "未命名会议"}</strong><span>{item.summary ?? "未提取到摘要"}</span></button></td>
                   <td>{formatDateTime(item.meetingStartAt)}</td>
                   <td>{formatDuration(item.durationMs)}</td>
+                  <td>{formatDuration(item.processingDurationMs)}</td>
                   <td>{item.templateName}</td>
                   <td className="cell-actions">
                     <button className="icon-button" type="button" aria-label={`复制 ${item.title ?? "未命名会议"} 的摘要`} disabled={!item.summary} onClick={() => void handleCopySummary(item)}><Clipboard size={16} /></button>

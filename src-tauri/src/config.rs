@@ -5,6 +5,7 @@ pub const PRESET_DASHSCOPE_FUNASR_CN: &str = "dashscope_funasr_cn";
 pub const PRESET_DASHSCOPE_FUNASR_INTL: &str = "dashscope_funasr_intl";
 pub const PRESET_XIAOMI_MIMO_ASR: &str = "xiaomi_mimo_asr";
 pub const PRESET_VOLCENGINE_ASR_FLASH: &str = "volcengine_asr_flash";
+pub const PRESET_XIAOMI_MIMO_LLM: &str = "xiaomi_mimo_llm";
 pub const PRESET_DEEPSEEK: &str = "deepseek";
 pub const PRESET_ALIYUN_BAILIAN: &str = "aliyun_bailian";
 pub const PRESET_CUSTOM_OPENAI: &str = "custom_openai_compatible";
@@ -14,6 +15,7 @@ pub const DASHSCOPE_FUNASR_CN_ENDPOINT: &str =
 pub const DASHSCOPE_FUNASR_INTL_ENDPOINT: &str =
     "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription";
 pub const XIAOMI_MIMO_ASR_ENDPOINT: &str = "https://api.xiaomimimo.com/v1/chat/completions";
+pub const XIAOMI_MIMO_LLM_ENDPOINT: &str = XIAOMI_MIMO_ASR_ENDPOINT;
 pub const VOLCENGINE_ASR_FLASH_ENDPOINT: &str =
     "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
 pub const DEEPSEEK_ENDPOINT: &str = "https://api.deepseek.com/chat/completions";
@@ -37,16 +39,17 @@ fn provider_from_environment(prefix: &str) -> PublicProviderConfig {
         default_kind,
     );
     let endpoint = read_text(&format!("MEETING_DESK_{prefix}_BASE_URL"), default_endpoint);
+    let model = read_text(&format!("MEETING_DESK_{prefix}_MODEL"), default_model);
     let preset_id = std::env::var(format!("MEETING_DESK_{prefix}_PRESET_ID"))
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| infer_preset_from_endpoint(&endpoint, default_preset));
+        .unwrap_or_else(|| infer_preset_from_endpoint(&endpoint, &model, default_preset));
     let secret_configured = environment_secret_exists(&format!("MEETING_DESK_{prefix}_API_KEY"));
     evaluate_provider_readiness(PublicProviderConfig {
         preset_id: preset_id.clone(),
         kind,
         endpoint,
-        model: read_text(&format!("MEETING_DESK_{prefix}_MODEL"), default_model),
+        model,
         credential_preset_id: secret_configured.then_some(preset_id),
         secret_configured,
         connect_timeout_ms: read_number(
@@ -69,11 +72,14 @@ fn provider_from_environment(prefix: &str) -> PublicProviderConfig {
 }
 
 /// 根据可信环境地址推断预设；自定义地址会自动进入可编辑的 OpenAI-compatible 预设。
-fn infer_preset_from_endpoint(endpoint: &str, fallback: &str) -> String {
+fn infer_preset_from_endpoint(endpoint: &str, model: &str, fallback: &str) -> String {
     match endpoint.trim() {
         DASHSCOPE_FUNASR_CN_ENDPOINT => PRESET_DASHSCOPE_FUNASR_CN.to_string(),
         DASHSCOPE_FUNASR_INTL_ENDPOINT => PRESET_DASHSCOPE_FUNASR_INTL.to_string(),
-        XIAOMI_MIMO_ASR_ENDPOINT => PRESET_XIAOMI_MIMO_ASR.to_string(),
+        XIAOMI_MIMO_ASR_ENDPOINT if model.trim() == "mimo-v2.5-asr" => {
+            PRESET_XIAOMI_MIMO_ASR.to_string()
+        }
+        XIAOMI_MIMO_LLM_ENDPOINT => PRESET_XIAOMI_MIMO_LLM.to_string(),
         VOLCENGINE_ASR_FLASH_ENDPOINT => PRESET_VOLCENGINE_ASR_FLASH.to_string(),
         DEEPSEEK_ENDPOINT => PRESET_DEEPSEEK.to_string(),
         ALIYUN_BAILIAN_ENDPOINT => PRESET_ALIYUN_BAILIAN.to_string(),
@@ -103,7 +109,7 @@ fn provider_defaults(prefix: &str) -> (&'static str, &'static str, &'static str,
 
 /// 根据旧配置的类型和精确托管地址推断稳定预设标识，未知地址归入自定义预设。
 pub fn infer_preset_id(provider: &PublicProviderConfig) -> String {
-    infer_preset_from_endpoint(&provider.endpoint, PRESET_CUSTOM_OPENAI)
+    infer_preset_from_endpoint(&provider.endpoint, &provider.model, PRESET_CUSTOM_OPENAI)
 }
 
 /// 根据公开字段和秘密存在标记计算安全的 Provider 就绪状态。
@@ -301,7 +307,7 @@ mod tests {
     #[test]
     fn infers_aliyun_bailian_managed_preset() {
         assert_eq!(
-            infer_preset_from_endpoint(ALIYUN_BAILIAN_ENDPOINT, PRESET_CUSTOM_OPENAI),
+            infer_preset_from_endpoint(ALIYUN_BAILIAN_ENDPOINT, "qwen-plus", PRESET_CUSTOM_OPENAI),
             PRESET_ALIYUN_BAILIAN
         );
     }
@@ -310,12 +316,37 @@ mod tests {
     #[test]
     fn infers_new_managed_asr_presets_from_exact_endpoints() {
         assert_eq!(
-            infer_preset_from_endpoint(XIAOMI_MIMO_ASR_ENDPOINT, PRESET_CUSTOM_OPENAI),
+            infer_preset_from_endpoint(
+                XIAOMI_MIMO_ASR_ENDPOINT,
+                "mimo-v2.5-asr",
+                PRESET_CUSTOM_OPENAI
+            ),
             PRESET_XIAOMI_MIMO_ASR
         );
         assert_eq!(
-            infer_preset_from_endpoint(VOLCENGINE_ASR_FLASH_ENDPOINT, PRESET_CUSTOM_OPENAI),
+            infer_preset_from_endpoint(
+                VOLCENGINE_ASR_FLASH_ENDPOINT,
+                "bigmodel",
+                PRESET_CUSTOM_OPENAI
+            ),
             PRESET_VOLCENGINE_ASR_FLASH
+        );
+    }
+
+    /// 验证 MiMo 共用地址会依据模型区分 ASR 与会议纪要预设。
+    #[test]
+    fn distinguishes_xiaomi_mimo_presets_by_model() {
+        assert_eq!(
+            infer_preset_from_endpoint(XIAOMI_MIMO_LLM_ENDPOINT, "mimo-v2.5", PRESET_CUSTOM_OPENAI),
+            PRESET_XIAOMI_MIMO_LLM
+        );
+        assert_eq!(
+            infer_preset_from_endpoint(
+                XIAOMI_MIMO_LLM_ENDPOINT,
+                "mimo-v2.5-pro",
+                PRESET_CUSTOM_OPENAI
+            ),
+            PRESET_XIAOMI_MIMO_LLM
         );
     }
 

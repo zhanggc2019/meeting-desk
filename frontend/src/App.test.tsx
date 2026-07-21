@@ -146,9 +146,13 @@ describe("Windows 离线媒体工作台", () => {
     render(<App client={createMockDesktopClient()} />);
     await user.click(screen.getByRole("button", { name: "会议记录" }));
 
+    expect(await screen.findByRole("columnheader", { name: "录音时长" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "总处理耗时" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "22:00" })).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: /^产品交付节奏讨论/ }));
     expect(await screen.findByRole("heading", { name: "产品交付节奏讨论" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "会议摘要" })).toBeInTheDocument();
+    expect(screen.getByText(/处理耗时 22:00/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "完整逐字稿" }));
     expect(screen.getAllByText("说话人 A")).toHaveLength(2);
@@ -187,10 +191,38 @@ describe("Windows 离线媒体工作台", () => {
     expect(screen.getByLabelText("会议纪要模型")).toHaveValue("qwen-plus");
     expect(within(screen.getByLabelText("会议纪要模型")).getByRole("option", { name: "qwen-flash（经济快速）" })).toBeInTheDocument();
 
+    await user.selectOptions(screen.getByLabelText("会议纪要服务商"), "xiaomi_mimo_llm");
+    expect(screen.queryByLabelText("会议纪要服务地址")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("会议纪要模型")).toHaveValue("mimo-v2.5");
+    expect(within(screen.getByLabelText("会议纪要模型")).getByRole("option", { name: "mimo-v2.5-pro" })).toBeInTheDocument();
+
     await user.selectOptions(screen.getByLabelText("会议纪要服务商"), "custom_openai_compatible");
     expect(screen.getByLabelText("会议纪要服务地址")).toBeInTheDocument();
     expect(screen.getByLabelText("会议纪要模型")).toHaveAttribute("placeholder", "输入已验证的模型名");
     expect(screen.queryByRole("option", { name: /Mock/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "第三方 OpenAI Completions（旧版）" })).not.toBeInTheDocument();
+
+  });
+
+  it("保存 MiMo 大模型托管配置", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const saveSettings = vi.spyOn(client, "saveProviderSettings");
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "设置" }));
+
+    await user.selectOptions(await screen.findByLabelText("会议纪要服务商"), "xiaomi_mimo_llm");
+    await user.selectOptions(screen.getByLabelText("会议纪要模型"), "mimo-v2.5-pro");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    expect(saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
+      minutes: expect.objectContaining({
+        presetId: "xiaomi_mimo_llm",
+        kind: "openai_compatible",
+        endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
+        model: "mimo-v2.5-pro",
+      }),
+    }));
+
   });
 
   it("保存 Xiaomi MiMo 与火山引擎托管转写预设时使用固定字段", async () => {

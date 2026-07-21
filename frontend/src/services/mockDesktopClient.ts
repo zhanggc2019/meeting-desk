@@ -29,6 +29,7 @@ const meeting: MeetingDetail = {
   id: "meeting-demo-1",
   templateName: "标准会议纪要",
   durationMs: 2_430_000,
+  processingDurationMs: 1_320_000,
   createdAt: "2026-07-17T06:30:00Z",
   minutes: {
     schemaVersion: "1.0.0",
@@ -358,6 +359,7 @@ export function createMockDesktopClient(): DesktopClient {
         summary: meeting.minutes.summary,
         meetingStartAt: meeting.minutes.meetingTime.startAt,
         durationMs: meeting.durationMs,
+        processingDurationMs: meeting.processingDurationMs,
         updatedAt: meeting.createdAt,
         templateName: meeting.templateName,
       };

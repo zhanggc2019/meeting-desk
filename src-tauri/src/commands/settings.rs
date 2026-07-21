@@ -302,6 +302,11 @@ fn resolve_provider(
             config::VOLCENGINE_ASR_FLASH_ENDPOINT.to_string(),
             managed_model(&input.model, &["bigmodel"], "bigmodel")?,
         ),
+        config::PRESET_XIAOMI_MIMO_LLM => (
+            "openai_compatible".to_string(),
+            config::XIAOMI_MIMO_LLM_ENDPOINT.to_string(),
+            managed_model(&input.model, &["mimo-v2.5", "mimo-v2.5-pro"], "mimo-v2.5")?,
+        ),
         config::PRESET_DEEPSEEK => (
             "openai_compatible".to_string(),
             config::DEEPSEEK_ENDPOINT.to_string(),
@@ -383,6 +388,13 @@ fn canonicalize_managed_provider(provider: &mut PublicProviderConfig, target: Pr
             provider.endpoint = config::VOLCENGINE_ASR_FLASH_ENDPOINT.to_string();
             provider.model = "bigmodel".to_string();
         }
+        (config::PRESET_XIAOMI_MIMO_LLM, ProviderTarget::Minutes) => {
+            provider.kind = "openai_compatible".to_string();
+            provider.endpoint = config::XIAOMI_MIMO_LLM_ENDPOINT.to_string();
+            if !matches!(provider.model.as_str(), "mimo-v2.5" | "mimo-v2.5-pro") {
+                provider.model = "mimo-v2.5".to_string();
+            }
+        }
         (config::PRESET_DEEPSEEK, ProviderTarget::Minutes) => {
             provider.kind = "openai_compatible".to_string();
             provider.endpoint = config::DEEPSEEK_ENDPOINT.to_string();
@@ -452,6 +464,7 @@ fn validate_preset_target(preset_id: &str, target: ProviderTarget) -> Result<(),
             config::PRESET_VOLCENGINE_ASR_FLASH,
             ProviderTarget::Transcription
         ) | (config::PRESET_DEEPSEEK, ProviderTarget::Minutes)
+            | (config::PRESET_XIAOMI_MIMO_LLM, ProviderTarget::Minutes)
             | (config::PRESET_ALIYUN_BAILIAN, ProviderTarget::Minutes)
             | (config::PRESET_CUSTOM_OPENAI, _)
     );
@@ -688,6 +701,21 @@ mod tests {
         assert_eq!(public.model, "bigmodel");
     }
 
+    /// 验证 MiMo 大模型预设固定官方地址并允许两个公开文本模型。
+    #[test]
+    fn managed_xiaomi_mimo_llm_uses_fixed_contract() {
+        let mut input = valid_input();
+        input.preset_id = config::PRESET_XIAOMI_MIMO_LLM.to_string();
+        input.kind = "untrusted_kind".to_string();
+        input.endpoint = "https://attacker.example.test/collect".to_string();
+        input.model = "mimo-v2.5-pro".to_string();
+        let public = resolve_provider(&input, ProviderTarget::Minutes, None, false)
+            .expect("MiMo LLM 托管预设应使用固定字段");
+        assert_eq!(public.kind, "openai_compatible");
+        assert_eq!(public.endpoint, config::XIAOMI_MIMO_LLM_ENDPOINT);
+        assert_eq!(public.model, "mimo-v2.5-pro");
+    }
+
     /// 验证托管 DeepSeek 预设忽略伪造地址并使用默认模型。
     #[test]
     fn managed_deepseek_uses_fixed_endpoint_and_default_model() {
@@ -726,6 +754,11 @@ mod tests {
         deepseek.preset_id = config::PRESET_DEEPSEEK.to_string();
         deepseek.model = "unknown-llm".to_string();
         assert!(resolve_provider(&deepseek, ProviderTarget::Minutes, None, false).is_err());
+
+        let mut mimo_llm = valid_input();
+        mimo_llm.preset_id = config::PRESET_XIAOMI_MIMO_LLM.to_string();
+        mimo_llm.model = "unknown-mimo".to_string();
+        assert!(resolve_provider(&mimo_llm, ProviderTarget::Minutes, None, false).is_err());
 
         let mut bailian = valid_input();
         bailian.preset_id = config::PRESET_ALIYUN_BAILIAN.to_string();

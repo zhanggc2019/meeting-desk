@@ -28,9 +28,10 @@ pub use http::{
 };
 pub use mock::{MockCallRecord, MockConfig, MockProvider, MockScenario};
 pub use openai_compatible::{
-    JsonContentMode, JsonPath, JsonPathSegment, MinutesHttpMapping,
-    OpenAiCompatibleMinutesProvider, OpenAiCompatibleTranscriptionProvider, SegmentResponseMapping,
-    TimestampUnit, ToggleFieldMapping, TranscriptionHttpMapping, TranscriptionResponseMapping,
+    openai_chat_completions_minutes_mapping, JsonContentMode, JsonPath, JsonPathSegment,
+    MinutesHttpMapping, OpenAiCompatibleMinutesProvider, OpenAiCompatibleTranscriptionProvider,
+    SegmentResponseMapping, TimestampUnit, ToggleFieldMapping, TranscriptionHttpMapping,
+    TranscriptionResponseMapping,
 };
 pub use retry::RetryPolicy;
 pub use secret::ProviderCredential;

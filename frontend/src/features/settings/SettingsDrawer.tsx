@@ -30,6 +30,7 @@ interface ProviderPresetDefinition {
 const DASHSCOPE_FUNASR_CN_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription";
 const DASHSCOPE_FUNASR_INTL_ENDPOINT = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription";
 const XIAOMI_MIMO_ASR_ENDPOINT = "https://api.xiaomimimo.com/v1/chat/completions";
+const XIAOMI_MIMO_LLM_ENDPOINT = XIAOMI_MIMO_ASR_ENDPOINT;
 const VOLCENGINE_ASR_FLASH_ENDPOINT = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions";
 const ALIYUN_BAILIAN_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
@@ -106,6 +107,18 @@ const MINUTES_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
     description: "使用 DeepSeek 官方 OpenAI-compatible 接口。",
   },
   {
+    id: "xiaomi_mimo_llm",
+    label: "Xiaomi MiMo 大模型",
+    kind: "openai_compatible",
+    endpoint: XIAOMI_MIMO_LLM_ENDPOINT,
+    defaultModel: "mimo-v2.5",
+    models: [
+      { value: "mimo-v2.5", label: "mimo-v2.5（推荐）" },
+      { value: "mimo-v2.5-pro", label: "mimo-v2.5-pro" },
+    ],
+    description: "使用 Xiaomi MiMo 官方 Chat Completions 接口生成结构化会议纪要。",
+  },
+  {
     id: "aliyun_bailian",
     label: "阿里云百炼（通义千问）",
     kind: "openai_compatible",
@@ -120,7 +133,7 @@ const MINUTES_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
   },
   {
     id: "custom_openai_compatible",
-    label: "第三方 OpenAI-compatible",
+    label: "第三方 OpenAI Chat Completions",
     kind: "openai_compatible",
     endpoint: "",
     defaultModel: "",
@@ -128,6 +141,11 @@ const MINUTES_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
     description: "填写第三方兼容 OpenAI Chat Completions 的完整请求地址和模型名。",
   },
 ];
+
+/** 判断预设是否允许用户填写完整请求地址和任意模型名。 */
+function isCustomPreset(presetId: ProviderPresetId): boolean {
+  return presetId === "custom_openai_compatible";
+}
 
 /** 返回指定业务类型允许使用的受信任预设。 */
 function getPresetDefinitions(target: ProviderTarget): ReadonlyArray<ProviderPresetDefinition> {
@@ -149,6 +167,7 @@ function inferPresetId(settings: PublicProviderSettings, target: ProviderTarget)
   if (target === "transcription" && settings.endpoint === DASHSCOPE_FUNASR_INTL_ENDPOINT) return "dashscope_funasr_intl";
   if (target === "transcription" && settings.endpoint === XIAOMI_MIMO_ASR_ENDPOINT) return "xiaomi_mimo_asr";
   if (target === "transcription" && settings.endpoint === VOLCENGINE_ASR_FLASH_ENDPOINT) return "volcengine_asr_flash";
+  if (target === "minutes" && settings.endpoint === XIAOMI_MIMO_LLM_ENDPOINT) return "xiaomi_mimo_llm";
   if (target === "minutes" && settings.endpoint === DEEPSEEK_ENDPOINT) return "deepseek";
   if (target === "minutes" && settings.endpoint === ALIYUN_BAILIAN_ENDPOINT) return "aliyun_bailian";
   return "custom_openai_compatible";
@@ -164,8 +183,8 @@ function toDraft(settings: PublicProviderSettings, target: ProviderTarget): Prov
   return {
     presetId,
     kind: preset.kind,
-    endpoint: presetId === "custom_openai_compatible" ? settings.endpoint : preset.endpoint,
-    model: presetId === "custom_openai_compatible" ? settings.model : managedModel,
+    endpoint: isCustomPreset(presetId) ? settings.endpoint : preset.endpoint,
+    model: isCustomPreset(presetId) ? settings.model : managedModel,
     apiKey: "",
     connectTimeoutMs: settings.connectTimeoutMs,
     requestTimeoutMs: settings.requestTimeoutMs,
@@ -397,7 +416,7 @@ interface ProviderSectionProps {
 function ProviderSection({ target, title, description, value, secretConfigured, connectionTest, onChange, onTest }: ProviderSectionProps) {
   const presets = getPresetDefinitions(target);
   const selectedPreset = getPresetDefinition(target, value.presetId);
-  const isCustom = selectedPreset.id === "custom_openai_compatible";
+  const isCustom = isCustomPreset(selectedPreset.id);
 
   /** 更新一个 Provider 草稿字段。 */
   function update<K extends keyof ProviderDraft>(key: K, nextValue: ProviderDraft[K]) {

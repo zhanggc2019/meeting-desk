@@ -760,7 +760,8 @@ Phase 2 已在 `src-tauri/src/providers/**` 实现：
 - `dashscope_funasr_cn`：提交端点 `https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription`，默认模型 `fun-asr`，可选 `fun-asr-mtl`；
 - `dashscope_funasr_intl`：提交端点 `https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription`，模型同上；
 - `deepseek`：请求端点 `https://api.deepseek.com/chat/completions`，默认模型 `deepseek-v4-flash`，可选 `deepseek-v4-pro`；
-- 托管预设的地址由可信后端解析并校验模型白名单，普通 UI 不允许编辑；只有 `custom_openai_compatible` 显示自定义地址和模型。
+- `xiaomi_mimo_llm`：请求端点 `https://api.xiaomimimo.com/v1/chat/completions`，默认模型 `mimo-v2.5`，可选 `mimo-v2.5-pro`；该地址与 MiMo ASR 共用，后端必须结合模型和业务目标推断预设；
+- 托管预设的地址由可信后端解析并校验模型白名单，普通 UI 不允许编辑；`custom_openai_compatible` 显示自定义完整 Chat Completions 地址和模型。
 
 百炼 Fun-ASR 不是 OpenAI multipart 转写接口。它需要“本地文件临时上传或 OSS → 异步提交 → 按 `task_id` 轮询 → 下载 `transcription_url` 结果”的专用 adapter；签名 URL、临时上传凭据和策略均视为秘密运行时数据，不得写入普通日志或 SQLite。
 
@@ -836,3 +837,20 @@ Provider 测试覆盖：mock 完整候选流程与取消、空转写、401 不�
 `RemoteAudioFile` 只接受 HTTPS，不允许 URL 用户名、密码或 fragment，长度上限为 8192。预签名 URL 可以保留 query，但整个 URL 在 `Debug`、错误和普通日志中始终显示为 `[REDACTED]`。应用不在本地抓取该 URL；支持 URL 的 Provider 将它作为敏感请求正文交给供应商拉取。
 
 `TranscriptionCapabilities.supportsRemoteUrls` 明确区分 Provider 是否支持 URL。mock provider 已覆盖 URL 流程；火山引擎为 `true`，MiMo 和通用 multipart adapter 为 `false`。当前稳定 IPC 和桌面 UI 仍只接受用户选择的本地文件，URL 输入的前端类型、持久化生命周期和任务创建命令需要单独阶段验收后开放。
+
+## 19. MiMo LLM 与 OpenAI 兼容纪要协议（2026-07-21）
+
+本节基于 Xiaomi MiMo 官方模型页面和 OpenAI 兼容字段约定固化请求边界，只使用 scripted executor 验证，不包含真实 Key 或真实会议原文。
+
+官方来源：
+
+- [Xiaomi MiMo 模型站](https://mimo.xiaomi.com/zh)
+- [MiMo-V2.5 模型说明](https://mimo.mi.com/docs/zh-CN/model-intro/mimo-v2.5)
+- [MiMo-V2.5-Pro 模型说明](https://mimo.mi.com/docs/zh-CN/model-intro/mimo-v2.5-pro)
+
+已固化事实与兼容边界：
+
+- MiMo 纪要预设使用 `POST https://api.xiaomimimo.com/v1/chat/completions`，允许 `mimo-v2.5` 和 `mimo-v2.5-pro`；托管地址和模型白名单不能由前端覆盖。
+- Chat Completions 请求使用 `model + messages[0].role/content`，响应只读取 `choices[0].message.content`。
+- 两种响应内容都按“不受信任的 JSON 字符串”解析，随后必须通过唯一的 MeetingMinutes Schema 与语义校验器；缺字段、非 JSON、版本不符或证据引用无效均失败，不自动修造纪要。
+- 通用第三方预设不推测上下文长度、JSON Schema、远程取消、幂等或自动重放能力；网络请求仍受 HTTPS、超时、有限响应、取消和安全错误分类约束。

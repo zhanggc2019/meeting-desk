@@ -480,6 +480,8 @@ progress { display: block; width: 95px; height: 3px; margin-top: 5px; accent-col
 .result-count { color: var(--muted); font-size: 12px; }
 .meeting-title-link strong, .meeting-title-link span { display: block; }
 .meeting-title-link span { max-width: 420px; margin-top: 4px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meeting-table-wrap { overflow-x: auto; }
+.meeting-table-wrap table { min-width: 900px; }
 
 .empty-state, .loading-state { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 290px; padding: 40px; color: var(--muted); text-align: center; }
 .empty-state h2 { margin: 14px 0 5px; color: var(--ink); font-size: 18px; }

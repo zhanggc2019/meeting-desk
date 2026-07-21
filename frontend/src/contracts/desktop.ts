@@ -81,6 +81,7 @@ export interface MeetingSummary {
   summary: string | null;
   meetingStartAt: string | null;
   durationMs: number | null;
+  processingDurationMs: number | null;
   updatedAt: string;
   templateName: string;
 }
@@ -150,6 +151,7 @@ export interface MeetingDetail {
   id: string;
   templateName: string;
   durationMs: number | null;
+  processingDurationMs: number | null;
   createdAt: string;
   minutes: MeetingMinutes;
   transcript: Transcript;
@@ -168,6 +170,7 @@ export type ProviderPresetId =
   | "dashscope_funasr_intl"
   | "xiaomi_mimo_asr"
   | "volcengine_asr_flash"
+  | "xiaomi_mimo_llm"
   | "deepseek"
   | "aliyun_bailian"
   | "custom_openai_compatible";

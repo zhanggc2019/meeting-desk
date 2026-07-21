@@ -63,7 +63,7 @@ export function MeetingDetailPage() {
     const { minutes } = detail;
     const time = minutes.meetingTime.startAt ? formatDateTime(minutes.meetingTime.startAt) : "会议时间未提供";
     const participants = minutes.participants.length > 0 ? minutes.participants.join("、") : "参会人未识别";
-    return `${time} · ${formatDuration(detail.durationMs)} · ${participants}`;
+    return `${time} · 录音 ${formatDuration(detail.durationMs)} · 处理耗时 ${formatDuration(detail.processingDurationMs)} · ${participants}`;
   }, [detail]);
 
   /** 复制用户当前请求的已保存文本，并提供通用反馈。 */
