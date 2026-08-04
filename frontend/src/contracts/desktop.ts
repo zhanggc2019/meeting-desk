@@ -67,6 +67,8 @@ export interface ProcessingTask {
   progress: number | null;
   updatedAt: string;
   createdAt: string;
+  processingStartedAt: string | null;
+  processingDurationMs: number | null;
   error: TaskError | null;
   availableActions: TaskAction[];
 }

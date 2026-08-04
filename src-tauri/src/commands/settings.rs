@@ -13,7 +13,7 @@ use crate::secrets::{self, SecretKind};
 const SETTINGS_KEY: &str = "provider_settings_v1";
 
 /// 接收单个 Provider 的配置；Key 只用于写入系统凭据管理器。
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSettingsInput {
     #[serde(default)]
@@ -28,7 +28,7 @@ pub struct ProviderSettingsInput {
 }
 
 /// 接收转写和纪要两个独立 Provider 的设置。
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveProviderSettingsInput {
     pub transcription: ProviderSettingsInput,
@@ -62,13 +62,18 @@ pub(crate) fn load_evaluated_settings(state: &AppState) -> Result<PublicSettings
     settings.transcription = migrate_public_provider(
         settings.transcription,
         ProviderTarget::Transcription,
-        secret_configured(SecretKind::Transcription)?,
+        legacy_secret_configured(SecretKind::Transcription)?,
     );
+    migrate_bound_legacy_secret(&settings.transcription, SecretKind::Transcription)?;
+    settings.transcription =
+        refresh_secret_status(settings.transcription, SecretKind::Transcription)?;
     settings.minutes = migrate_public_provider(
         settings.minutes,
         ProviderTarget::Minutes,
-        secret_configured(SecretKind::Minutes)?,
+        legacy_secret_configured(SecretKind::Minutes)?,
     );
+    migrate_bound_legacy_secret(&settings.minutes, SecretKind::Minutes)?;
+    settings.minutes = refresh_secret_status(settings.minutes, SecretKind::Minutes)?;
     Ok(config::evaluate_settings_readiness(settings))
 }
 
@@ -78,30 +83,18 @@ pub fn save_provider_settings(
     state: State<'_, AppState>,
     input: SaveProviderSettingsInput,
 ) -> Result<PublicSettings, CommandError> {
-    let previous = load_public_settings(&state)?;
-    let transcription_secret_exists = secret_configured(SecretKind::Transcription)?;
-    let minutes_secret_exists = secret_configured(SecretKind::Minutes)?;
-    let previous_transcription = migrate_public_provider(
-        previous.transcription,
-        ProviderTarget::Transcription,
-        transcription_secret_exists,
-    );
-    let previous_minutes = migrate_public_provider(
-        previous.minutes,
-        ProviderTarget::Minutes,
-        minutes_secret_exists,
-    );
+    let previous = load_evaluated_settings(state.inner())?;
     let transcription = resolve_provider(
         &input.transcription,
         ProviderTarget::Transcription,
-        previous_transcription.credential_preset_id,
-        transcription_secret_exists || has_new_secret(&input.transcription),
+        previous.transcription.credential_preset_id,
+        previous.transcription.secret_configured || has_new_secret(&input.transcription),
     )?;
     let minutes = resolve_provider(
         &input.minutes,
         ProviderTarget::Minutes,
-        previous_minutes.credential_preset_id,
-        minutes_secret_exists || has_new_secret(&input.minutes),
+        previous.minutes.credential_preset_id,
+        previous.minutes.secret_configured || has_new_secret(&input.minutes),
     )?;
     if let Some(secret) = input
         .transcription
@@ -109,7 +102,7 @@ pub fn save_provider_settings(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
     {
-        save_secret(SecretKind::Transcription, secret)?;
+        save_secret(SecretKind::Transcription, &transcription, secret)?;
     }
     if let Some(secret) = input
         .minutes
@@ -117,7 +110,7 @@ pub fn save_provider_settings(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
     {
-        save_secret(SecretKind::Minutes, secret)?;
+        save_secret(SecretKind::Minutes, &minutes, secret)?;
     }
     let public = PublicSettings {
         transcription,
@@ -131,9 +124,18 @@ pub fn save_provider_settings(
 
 /// 删除指定 Provider 的系统凭据。
 #[tauri::command]
-pub fn delete_provider_secret(kind: String) -> Result<bool, CommandError> {
+pub fn delete_provider_secret(
+    state: State<'_, AppState>,
+    kind: String,
+) -> Result<bool, CommandError> {
     let secret_kind = parse_secret_kind(&kind)?;
-    secrets::delete_secret(secret_kind).map_err(|_| credential_error())?;
+    let settings = load_evaluated_settings(state.inner())?;
+    let provider = match secret_kind {
+        SecretKind::Transcription => settings.transcription,
+        SecretKind::Minutes => settings.minutes,
+    };
+    let binding_id = config::credential_binding_id(&provider);
+    secrets::delete_secret_for_binding(secret_kind, &binding_id).map_err(|_| credential_error())?;
     Ok(true)
 }
 
@@ -155,7 +157,14 @@ pub async fn test_provider_connection(
             ))
         }
     };
-    let api_key = secrets::read_secret(secret_kind)
+    let binding_id = provider.credential_preset_id.as_deref().ok_or_else(|| {
+        CommandError::new(
+            "provider_not_configured",
+            "请先保存当前 Provider 的 API Key",
+            false,
+        )
+    })?;
+    let api_key = secrets::read_secret_for_binding(secret_kind, binding_id)
         .map_err(|_| credential_error())?
         .filter(|value| !value.trim().is_empty());
     let Some(api_key) = api_key.filter(|_| provider.secret_configured) else {
@@ -242,11 +251,12 @@ fn load_public_settings(state: &AppState) -> Result<PublicSettings, CommandError
 fn migrate_public_provider(
     mut provider: PublicProviderConfig,
     target: ProviderTarget,
-    secret_exists: bool,
+    legacy_secret_exists: bool,
 ) -> PublicProviderConfig {
-    if provider.preset_id == config::PRESET_MOCK || provider.kind == "mock" {
+    let was_legacy_mock = provider.preset_id == config::PRESET_MOCK || provider.kind == "mock";
+    if was_legacy_mock {
         provider.preset_id = match target {
-            ProviderTarget::Transcription => config::PRESET_DASHSCOPE_FUNASR_CN,
+            ProviderTarget::Transcription => config::PRESET_XIAOMI_MIMO_ASR,
             ProviderTarget::Minutes => config::PRESET_DEEPSEEK,
         }
         .to_string();
@@ -256,14 +266,44 @@ fn migrate_public_provider(
     let legacy_without_preset = provider.preset_id.trim().is_empty();
     if legacy_without_preset {
         provider.preset_id = config::infer_preset_id(&provider);
-        if provider.credential_preset_id.is_none() && secret_exists {
-            provider.credential_preset_id = Some(provider.preset_id.clone());
-        }
     }
+    let stored_binding = provider.credential_preset_id.clone();
     canonicalize_managed_provider(&mut provider, target);
-    provider.secret_configured = secret_exists
-        && provider.credential_preset_id.as_deref() == Some(provider.preset_id.as_str());
+    let expected_binding = config::credential_binding_id(&provider);
+    if stored_binding.as_deref() == Some(provider.preset_id.as_str())
+        || (!was_legacy_mock && stored_binding.is_none() && legacy_secret_exists)
+    {
+        provider.credential_preset_id = Some(expected_binding);
+    }
+    provider.secret_configured = false;
     provider
+}
+
+/// Recomputes secret readiness from the current provider-specific credential binding.
+fn refresh_secret_status(
+    mut provider: PublicProviderConfig,
+    kind: SecretKind,
+) -> Result<PublicProviderConfig, CommandError> {
+    let expected_binding = config::credential_binding_id(&provider);
+    let binding_matches =
+        provider.credential_preset_id.as_deref() == Some(expected_binding.as_str());
+    provider.secret_configured = binding_matches
+        && secrets::secret_is_configured_for_binding(kind, &expected_binding)
+            .map_err(|_| credential_error())?;
+    Ok(provider)
+}
+
+/// Migrates only when the public config is already bound to this exact provider identity.
+fn migrate_bound_legacy_secret(
+    provider: &PublicProviderConfig,
+    kind: SecretKind,
+) -> Result<(), CommandError> {
+    let expected_binding = config::credential_binding_id(provider);
+    if provider.credential_preset_id.as_deref() == Some(expected_binding.as_str()) {
+        secrets::migrate_legacy_secret_for_binding(kind, &expected_binding)
+            .map_err(|_| credential_error())?;
+    }
+    Ok(())
 }
 
 /// 按目标服务和预设可信解析保存输入，托管地址与类型不采信前端字段。
@@ -276,11 +316,6 @@ fn resolve_provider(
     validate_limits(input)?;
     let preset_id = effective_preset_id(input);
     validate_preset_target(&preset_id, target)?;
-    let credential_preset_id = if has_new_secret(input) {
-        Some(preset_id.clone())
-    } else {
-        previous_credential_preset_id
-    };
     let (kind, endpoint, model) = match preset_id.as_str() {
         config::PRESET_DASHSCOPE_FUNASR_CN => (
             "dashscope_funasr".to_string(),
@@ -343,22 +378,30 @@ fn resolve_provider(
         }
         _ => unreachable!("预设已在目标校验中穷举"),
     };
-    let secret_configured =
-        secret_exists_after_save && credential_preset_id.as_deref() == Some(preset_id.as_str());
-    Ok(config::evaluate_provider_readiness(PublicProviderConfig {
+    let mut provider = PublicProviderConfig {
         preset_id,
         kind,
         endpoint,
         model,
-        credential_preset_id,
-        secret_configured,
+        credential_preset_id: None,
+        secret_configured: false,
         connect_timeout_ms: input.connect_timeout_ms,
         request_timeout_ms: input.request_timeout_ms,
         max_retries: input.max_retries,
         ready: false,
         readiness: crate::domain::ProviderReadiness::Incomplete,
         validation_message: String::new(),
-    }))
+    };
+    let expected_binding = config::credential_binding_id(&provider);
+    provider.credential_preset_id = if has_new_secret(input) {
+        Some(expected_binding.clone())
+    } else {
+        previous_credential_preset_id
+    };
+    let secret_configured = secret_exists_after_save
+        && provider.credential_preset_id.as_deref() == Some(expected_binding.as_str());
+    provider.secret_configured = secret_configured;
+    Ok(config::evaluate_provider_readiness(provider))
 }
 
 /// 将托管预设恢复为后端固定字段，避免旧配置或本地篡改改变供应商地址。
@@ -415,7 +458,7 @@ fn canonicalize_managed_provider(provider: &mut PublicProviderConfig, target: Pr
                 provider.model = "qwen-plus".to_string();
             }
         }
-        (config::PRESET_CUSTOM_OPENAI, _) => {
+        (config::PRESET_CUSTOM_OPENAI, ProviderTarget::Minutes) => {
             provider.kind = "openai_compatible".to_string();
         }
         _ => {
@@ -452,12 +495,6 @@ fn validate_preset_target(preset_id: &str, target: ProviderTarget) -> Result<(),
     let supported = matches!(
         (preset_id, target),
         (
-            config::PRESET_DASHSCOPE_FUNASR_CN,
-            ProviderTarget::Transcription
-        ) | (
-            config::PRESET_DASHSCOPE_FUNASR_INTL,
-            ProviderTarget::Transcription
-        ) | (
             config::PRESET_XIAOMI_MIMO_ASR,
             ProviderTarget::Transcription
         ) | (
@@ -466,7 +503,7 @@ fn validate_preset_target(preset_id: &str, target: ProviderTarget) -> Result<(),
         ) | (config::PRESET_DEEPSEEK, ProviderTarget::Minutes)
             | (config::PRESET_XIAOMI_MIMO_LLM, ProviderTarget::Minutes)
             | (config::PRESET_ALIYUN_BAILIAN, ProviderTarget::Minutes)
-            | (config::PRESET_CUSTOM_OPENAI, _)
+            | (config::PRESET_CUSTOM_OPENAI, ProviderTarget::Minutes)
     );
     if supported {
         Ok(())
@@ -555,12 +592,20 @@ fn parse_secret_kind(value: &str) -> Result<SecretKind, CommandError> {
 }
 
 /// 保存一个 Key，并隐藏系统错误细节。
-fn save_secret(kind: SecretKind, secret: &str) -> Result<(), CommandError> {
-    secrets::save_secret(kind, secret).map_err(|_| credential_error())
+fn save_secret(
+    kind: SecretKind,
+    provider: &PublicProviderConfig,
+    secret: &str,
+) -> Result<(), CommandError> {
+    let binding_id = provider
+        .credential_preset_id
+        .as_deref()
+        .ok_or_else(|| CommandError::new("settings_invalid", "Provider 凭据绑定无效", false))?;
+    secrets::save_secret_for_binding(kind, binding_id, secret).map_err(|_| credential_error())
 }
 
 /// 查询秘密是否存在，并隐藏系统错误细节。
-fn secret_configured(kind: SecretKind) -> Result<bool, CommandError> {
+fn legacy_secret_configured(kind: SecretKind) -> Result<bool, CommandError> {
     secrets::secret_is_configured(kind).map_err(|_| credential_error())
 }
 
@@ -625,7 +670,20 @@ mod tests {
         let public = resolve_provider(
             &valid_input(),
             ProviderTarget::Minutes,
-            Some(config::PRESET_CUSTOM_OPENAI.to_string()),
+            Some(config::credential_binding_id(&PublicProviderConfig {
+                preset_id: config::PRESET_CUSTOM_OPENAI.to_string(),
+                kind: "openai_compatible".to_string(),
+                endpoint: "https://api.example.test/v1".to_string(),
+                model: "test-model".to_string(),
+                credential_preset_id: None,
+                secret_configured: false,
+                connect_timeout_ms: 10_000,
+                request_timeout_ms: 60_000,
+                max_retries: 2,
+                ready: false,
+                readiness: crate::domain::ProviderReadiness::Incomplete,
+                validation_message: String::new(),
+            })),
             true,
         )
         .expect("自定义 Provider 应通过校验");
@@ -647,28 +705,27 @@ mod tests {
             "maxRetries":2
         }"#;
         let parsed: PublicProviderConfig = serde_json::from_str(legacy).expect("旧配置应可读取");
-        let migrated = migrate_public_provider(parsed, ProviderTarget::Minutes, true);
+        let mut migrated = migrate_public_provider(parsed, ProviderTarget::Minutes, true);
         assert_eq!(migrated.preset_id, config::PRESET_CUSTOM_OPENAI);
+        let expected_binding = config::credential_binding_id(&migrated);
         assert_eq!(
             migrated.credential_preset_id.as_deref(),
-            Some(config::PRESET_CUSTOM_OPENAI)
+            Some(expected_binding.as_str())
         );
+        migrated.secret_configured = true;
         let evaluated = config::evaluate_provider_readiness(migrated);
         assert!(evaluated.ready);
     }
 
-    /// 验证托管 FunASR 预设忽略伪造的客户端类型与地址。
+    /// 验证尚未接通异步上传链路的 FunASR 预设不能保存为正式配置。
     #[test]
-    fn managed_funasr_endpoint_cannot_be_overridden() {
+    fn rejects_unimplemented_funasr_preset() {
         let mut input = valid_input();
         input.preset_id = config::PRESET_DASHSCOPE_FUNASR_CN.to_string();
         input.kind = "untrusted_kind".to_string();
         input.endpoint = "https://attacker.example.test/collect".to_string();
         input.model = "fun-asr-mtl".to_string();
-        let public = resolve_provider(&input, ProviderTarget::Transcription, None, false)
-            .expect("托管 FunASR 输入应使用固定地址");
-        assert_eq!(public.kind, "dashscope_funasr");
-        assert_eq!(public.endpoint, config::DASHSCOPE_FUNASR_CN_ENDPOINT);
+        assert!(resolve_provider(&input, ProviderTarget::Transcription, None, false).is_err());
     }
 
     /// 验证 Xiaomi MiMo 托管预设固定官方地址和唯一模型。
@@ -745,11 +802,6 @@ mod tests {
     /// 验证托管预设拒绝白名单外的模型。
     #[test]
     fn managed_presets_reject_unknown_models() {
-        let mut funasr = valid_input();
-        funasr.preset_id = config::PRESET_DASHSCOPE_FUNASR_CN.to_string();
-        funasr.model = "unknown-asr".to_string();
-        assert!(resolve_provider(&funasr, ProviderTarget::Transcription, None, false).is_err());
-
         let mut deepseek = valid_input();
         deepseek.preset_id = config::PRESET_DEEPSEEK.to_string();
         deepseek.model = "unknown-llm".to_string();
@@ -782,6 +834,24 @@ mod tests {
         let mut input = valid_input();
         input.preset_id = config::PRESET_MOCK.to_string();
         assert!(resolve_provider(&input, ProviderTarget::Minutes, None, false).is_err());
+    }
+
+    /// 验证旧版 Mock 配置不会把遗留真实凭据绑定到新默认 Provider。
+    #[test]
+    fn legacy_mock_migration_does_not_rebind_legacy_credential() {
+        let legacy = PublicProviderConfig {
+            preset_id: config::PRESET_MOCK.to_string(),
+            kind: "mock".to_string(),
+            credential_preset_id: Some(config::PRESET_MOCK.to_string()),
+            secret_configured: true,
+            ..PublicProviderConfig::default()
+        };
+
+        let migrated = migrate_public_provider(legacy, ProviderTarget::Minutes, true);
+
+        assert_eq!(migrated.preset_id, config::PRESET_DEEPSEEK);
+        assert!(migrated.credential_preset_id.is_none());
+        assert!(!migrated.secret_configured);
     }
 
     /// 验证切换预设但未输入新 Key 时不会静默复用旧预设凭据。
@@ -826,5 +896,30 @@ mod tests {
         managed.endpoint.push('/');
         let custom = migrate_public_provider(managed, ProviderTarget::Minutes, true);
         assert_eq!(custom.preset_id, config::PRESET_CUSTOM_OPENAI);
+    }
+
+    /// 验证没有可执行适配器的旧版自定义 ASR 配置不会被标记为就绪。
+    #[test]
+    fn legacy_custom_transcription_is_not_executable() {
+        let custom = PublicProviderConfig {
+            preset_id: config::PRESET_CUSTOM_OPENAI.to_string(),
+            kind: "openai_compatible".to_string(),
+            endpoint: "https://asr.example.test/v1".to_string(),
+            model: "custom-asr".to_string(),
+            credential_preset_id: None,
+            secret_configured: true,
+            connect_timeout_ms: 10_000,
+            request_timeout_ms: 60_000,
+            max_retries: 2,
+            ready: true,
+            readiness: crate::domain::ProviderReadiness::Ready,
+            validation_message: String::new(),
+        };
+
+        let migrated = migrate_public_provider(custom, ProviderTarget::Transcription, true);
+        let evaluated = config::evaluate_provider_readiness(migrated);
+
+        assert_eq!(evaluated.kind, "invalid");
+        assert!(!evaluated.ready);
     }
 }

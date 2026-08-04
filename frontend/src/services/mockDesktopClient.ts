@@ -91,6 +91,8 @@ const initialTasks: ProcessingTask[] = [
     progress: null,
     createdAt: "2026-07-17T06:20:00Z",
     updatedAt: "2026-07-17T06:42:00Z",
+    processingStartedAt: "2026-07-17T06:20:00Z",
+    processingDurationMs: 1_320_000,
     error: null,
     availableActions: ["cancel"],
   },
@@ -107,6 +109,8 @@ const initialTasks: ProcessingTask[] = [
     progress: null,
     createdAt: "2026-07-17T05:10:00Z",
     updatedAt: "2026-07-17T05:30:00Z",
+    processingStartedAt: null,
+    processingDurationMs: 1_200_000,
     error: { code: "network_unavailable", safeMessage: "网络不可用，请检查连接后重试", retryable: true },
     availableActions: ["retry"],
   },
@@ -123,6 +127,8 @@ const initialTasks: ProcessingTask[] = [
     progress: 1,
     createdAt: "2026-07-17T04:30:00Z",
     updatedAt: "2026-07-17T04:52:00Z",
+    processingStartedAt: null,
+    processingDurationMs: 1_320_000,
     error: null,
     availableActions: ["openMeeting"],
   },
@@ -130,10 +136,10 @@ const initialTasks: ProcessingTask[] = [
 
 const initialSettings: PublicSettings = {
   transcription: {
-    presetId: "dashscope_funasr_cn",
-    kind: "dashscope_funasr",
-    endpoint: "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
-    model: "fun-asr",
+    presetId: "xiaomi_mimo_asr",
+    kind: "xiaomi_mimo",
+    endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
+    model: "mimo-v2.5-asr",
     secretConfigured: false,
     ready: false,
     readiness: "incomplete",
@@ -219,10 +225,14 @@ function createCandidate(file: BrowserFileDescriptor, index: number): ImportCand
 function resolveMockSecretStatus(
   currentPresetId: PublicSettings["transcription"]["presetId"],
   nextPresetId: SaveProviderSettingsInput["transcription"]["presetId"],
+  currentEndpoint: string,
+  nextEndpoint: string,
   currentConfigured: boolean,
   nextSecret: string | undefined,
 ): boolean {
-  return Boolean(nextSecret) || (currentPresetId === nextPresetId && currentConfigured);
+  const sameBinding = currentPresetId === nextPresetId
+    && (nextPresetId !== "custom_openai_compatible" || currentEndpoint.trim() === nextEndpoint.trim());
+  return Boolean(nextSecret?.trim()) || (sameBinding && currentConfigured);
 }
 
 /** 判断浏览器测试客户端中的两个真实 Provider 是否均已完成必要配置。 */
@@ -239,6 +249,7 @@ function areProvidersReady(settings: PublicSettings): boolean {
 export function createMockDesktopClient(): DesktopClient {
   let tasks = initialTasks.map((task) => ({ ...task, availableActions: [...task.availableActions] }));
   let settings = structuredClone(initialSettings);
+  let meetingDeleted = false;
   let sequence = 1;
   const artifactNames = new Map<string, string>();
 
@@ -293,6 +304,8 @@ export function createMockDesktopClient(): DesktopClient {
         progress: null,
         createdAt: now,
         updatedAt: now,
+        processingStartedAt: null,
+        processingDurationMs: 0,
         error: null,
         availableActions: ["cancel" as const],
       }));
@@ -353,6 +366,7 @@ export function createMockDesktopClient(): DesktopClient {
       return structuredClone(task);
     },
     async listMeetings(query) {
+      if (meetingDeleted) return [];
       const summary: MeetingSummary = {
         id: meeting.id,
         title: meeting.minutes.title,
@@ -368,19 +382,25 @@ export function createMockDesktopClient(): DesktopClient {
       return normalizedQuery && !haystack.includes(normalizedQuery) ? [] : [structuredClone(summary)];
     },
     async getMeetingDetail(meetingId) {
-      if (meetingId !== meeting.id) {
+      if (meetingDeleted || meetingId !== meeting.id) {
         throw new Error("会议记录不存在或已被删除");
       }
       return structuredClone(meeting);
     },
     async getMeetingMarkdownPreview(meetingId) {
-      if (meetingId !== meeting.id) {
+      if (meetingDeleted || meetingId !== meeting.id) {
         throw new Error("无法预览：会议记录不存在");
       }
       return createMeetingMarkdown();
     },
+    async deleteMeeting(meetingId) {
+      if (meetingDeleted || meetingId !== meeting.id) return false;
+      meetingDeleted = true;
+      tasks = tasks.filter((task) => task.meetingId !== meetingId);
+      return true;
+    },
     async exportMeetingMarkdown(meetingId) {
-      if (meetingId !== meeting.id) {
+      if (meetingDeleted || meetingId !== meeting.id) {
         throw new Error("无法导出：会议记录不存在");
       }
       return { status: "exported", displayName: "产品交付节奏讨论.md" };
@@ -392,12 +412,16 @@ export function createMockDesktopClient(): DesktopClient {
       const transcriptionSecretConfigured = resolveMockSecretStatus(
         settings.transcription.presetId,
         input.transcription.presetId,
+        settings.transcription.endpoint,
+        input.transcription.endpoint,
         settings.transcription.secretConfigured,
         input.transcription.apiKey,
       );
       const minutesSecretConfigured = resolveMockSecretStatus(
         settings.minutes.presetId,
         input.minutes.presetId,
+        settings.minutes.endpoint,
+        input.minutes.endpoint,
         settings.minutes.secretConfigured,
         input.minutes.apiKey,
       );

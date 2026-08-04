@@ -557,7 +557,7 @@ fn releases_managed_artifact_without_deleting_source() {
     );
 }
 
-/// 验证启动清理仅移除受管目录中的直接文件。
+/// 验证启动清理仅移除受管目录中的直接文件并保留未知文件。
 #[test]
 fn clears_staged_files_on_startup_recovery() {
     let source_root = TempDir::new().expect("source tempdir must be created");
@@ -566,14 +566,39 @@ fn clears_staged_files_on_startup_recovery() {
     let importer = create_importer(&staging);
     let response = importer.import_selected_files(single_request(), vec![source]);
     assert_eq!(response.items[0].status, ImportItemStatus::Ready);
+    let unknown = staging.path().join("keep-me.txt");
+    fs::write(&unknown, b"unrelated").expect("write unrelated file");
 
-    assert_eq!(importer.clear_staged_files().expect("clear staging"), 1);
-    assert_eq!(
-        fs::read_dir(staging.path())
-            .expect("staging exists")
-            .count(),
-        0
-    );
+    let report = importer.clear_staged_files().expect("clear staging");
+    assert_eq!(report.removed, 1);
+    assert_eq!(report.failed, 0);
+    assert!(unknown.is_file());
+}
+
+/// 验证一个 Windows 锁定文件不会阻止清理后续受管文件。
+#[cfg(windows)]
+#[test]
+fn continues_cleanup_after_locked_staged_file() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let staging = TempDir::new().expect("staging tempdir must be created");
+    let importer = create_importer(&staging);
+    let locked = staging.path().join(format!("{}.wav", uuid::Uuid::new_v4()));
+    let removable = staging.path().join(format!("{}.mp3", uuid::Uuid::new_v4()));
+    fs::write(&locked, b"locked").expect("write locked fixture");
+    fs::write(&removable, b"removable").expect("write removable fixture");
+    let _lock = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&locked)
+        .expect("lock staged fixture");
+
+    let report = importer.clear_staged_files().expect("clear staging");
+
+    assert_eq!(report.removed, 1);
+    assert_eq!(report.failed, 1);
+    assert!(locked.is_file());
+    assert!(!removable.exists());
 }
 
 /// 验证类型定义没有意外要求源路径 DTO。

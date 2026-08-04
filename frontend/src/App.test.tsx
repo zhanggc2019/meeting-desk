@@ -22,10 +22,10 @@ async function createConfiguredClient() {
   const client = createMockDesktopClient();
   await client.saveProviderSettings({
     transcription: {
-      presetId: "dashscope_funasr_cn",
-      kind: "dashscope_funasr",
-      endpoint: "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
-      model: "fun-asr",
+      presetId: "xiaomi_mimo_asr",
+      kind: "xiaomi_mimo",
+      endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
+      model: "mimo-v2.5-asr",
       apiKey: "test-transcription-key",
       connectTimeoutMs: 5000,
       requestTimeoutMs: 60_000,
@@ -160,17 +160,34 @@ describe("Windows 离线媒体工作台", () => {
     expect(await screen.findByText("已复制完整逐字稿")).toBeInTheDocument();
   });
 
+  it("确认后删除会议和关联记录并返回列表", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const deleteMeeting = vi.spyOn(client, "deleteMeeting");
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "会议记录" }));
+    await user.click(await screen.findByRole("button", { name: /^产品交付节奏讨论/ }));
+
+    await user.click(await screen.findByRole("button", { name: "删除会议" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText(/原始文件不会受影响/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "删除会议" }));
+
+    await waitFor(() => expect(deleteMeeting).toHaveBeenCalledWith("meeting-demo-1"));
+    expect(await screen.findByRole("heading", { name: "会议记录" })).toBeInTheDocument();
+    expect(screen.queryByText("产品交付节奏讨论")).not.toBeInTheDocument();
+  });
+
   it("使用受信任预设隐藏地址输入并提供受控模型下拉", async () => {
     const user = userEvent.setup();
     render(<App client={createMockDesktopClient()} />);
     await user.click(screen.getByRole("button", { name: "设置" }));
 
     expect(await screen.findByRole("heading", { name: "服务设置" })).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "dashscope_funasr_cn");
-    expect(within(screen.getByLabelText("语音转写服务商")).getByRole("option", { name: "阿里云百炼 FunASR（国际 / 新加坡）" })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "xiaomi_mimo_asr");
+    expect(within(screen.getByLabelText("语音转写服务商")).queryByRole("option", { name: /FunASR/ })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("语音转写服务地址")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("语音转写模型")).toHaveValue("fun-asr");
-    expect(within(screen.getByLabelText("语音转写模型")).getByRole("option", { name: "fun-asr-mtl" })).toBeInTheDocument();
+    expect(screen.getByLabelText("语音转写模型")).toHaveValue("mimo-v2.5-asr");
     expect(screen.getAllByText("官方地址由软件维护").length).toBeGreaterThan(0);
 
     await user.selectOptions(screen.getByLabelText("语音转写服务商"), "xiaomi_mimo_asr");
@@ -263,7 +280,7 @@ describe("Windows 离线媒体工作台", () => {
     await user.click(screen.getByRole("button", { name: "设置" }));
 
     expect(await screen.findByRole("heading", { name: "服务设置" })).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "dashscope_funasr_cn");
+    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "xiaomi_mimo_asr");
     await user.selectOptions(screen.getByLabelText("会议纪要服务商"), "deepseek");
     expect(screen.getByLabelText("会议纪要模型")).toHaveValue("deepseek-v4-flash");
 
@@ -276,9 +293,9 @@ describe("Windows 离线媒体工作台", () => {
     expect(screen.getAllByText("密钥已配置")).toHaveLength(1);
     expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({
       transcription: expect.objectContaining({
-        presetId: "dashscope_funasr_cn",
-        endpoint: "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
-        model: "fun-asr",
+        presetId: "xiaomi_mimo_asr",
+        endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
+        model: "mimo-v2.5-asr",
       }),
       minutes: expect.objectContaining({
         presetId: "deepseek",
@@ -293,7 +310,7 @@ describe("Windows 离线媒体工作台", () => {
     render(<App client={createMockDesktopClient()} />);
 
     expect(await screen.findByRole("heading", { name: "开始前，请先连接两项服务" })).toBeInTheDocument();
-    expect(screen.getByText("FunASR / ASR 转写接口")).toBeInTheDocument();
+    expect(screen.getByText("离线文件 ASR 转写接口")).toBeInTheDocument();
     expect(screen.getByText("纪要生成大模型接口")).toBeInTheDocument();
     expect(screen.getAllByText("请补充：API Key")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "选择音频或视频" })).toBeDisabled();

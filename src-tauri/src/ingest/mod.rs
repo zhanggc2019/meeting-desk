@@ -139,6 +139,13 @@ pub struct ImportBatchResponse {
     pub items: Vec<ImportItemResult>,
 }
 
+/// Summarizes startup cleanup without exposing staged file names or paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StagingCleanupReport {
+    pub removed: usize,
+    pub failed: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ArtifactKey {
     sha256: String,
@@ -286,27 +293,43 @@ impl OfflineAudioImporter {
         Ok(true)
     }
 
-    /// 启动时清理受管根目录中的直接文件，不递归且不跟随符号链接。
-    pub fn clear_staged_files(&self) -> Result<usize, IngestError> {
-        let mut removed = 0usize;
+    /// 启动时逐项清理本应用命名的直接文件，不递归且不跟随符号链接。
+    pub fn clear_staged_files(&self) -> Result<StagingCleanupReport, IngestError> {
+        let mut report = StagingCleanupReport {
+            removed: 0,
+            failed: 0,
+        };
         for entry in
             fs::read_dir(&self.staging_root).map_err(|_| IngestError::AudioStorageFailed)?
         {
-            let entry = entry.map_err(|_| IngestError::AudioStorageFailed)?;
-            let file_type = entry
-                .file_type()
-                .map_err(|_| IngestError::AudioStorageFailed)?;
+            let Ok(entry) = entry else {
+                report.failed = report.failed.saturating_add(1);
+                continue;
+            };
+            let Ok(file_type) = entry.file_type() else {
+                report.failed = report.failed.saturating_add(1);
+                continue;
+            };
             if !file_type.is_file() {
                 continue;
             }
-            fs::remove_file(entry.path()).map_err(|_| IngestError::AudioStorageFailed)?;
-            removed = removed.saturating_add(1);
+            let Some(file_name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if !is_managed_staging_name(&file_name) {
+                continue;
+            }
+            match fs::remove_file(entry.path()) {
+                Ok(()) => report.removed = report.removed.saturating_add(1),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => report.failed = report.failed.saturating_add(1),
+            }
         }
         self.artifacts
             .lock()
             .map_err(|_| IngestError::AudioStorageFailed)?
-            .clear();
-        Ok(removed)
+            .retain(|_, record| record.managed_path.is_file());
+        Ok(report)
     }
 
     /// 在复制前以 checked arithmetic 判断批次已知文件大小是否超限。
@@ -460,6 +483,27 @@ impl OfflineAudioImporter {
             duplicate_of_artifact_id: None,
         })
     }
+}
+
+/// Matches only canonical UUID artifacts and temporary part files created by this importer.
+fn is_managed_staging_name(file_name: &str) -> bool {
+    if let Some(artifact_id) = file_name
+        .strip_prefix('.')
+        .and_then(|value| value.strip_suffix(".part"))
+    {
+        return is_canonical_artifact_id(artifact_id);
+    }
+    let Some((artifact_id, extension)) = file_name.rsplit_once('.') else {
+        return false;
+    };
+    is_canonical_artifact_id(artifact_id)
+        && matches!(extension, "wav" | "mp3" | "m4a" | "mp4" | "mov")
+}
+
+fn is_canonical_artifact_id(value: &str) -> bool {
+    Uuid::parse_str(value)
+        .ok()
+        .is_some_and(|parsed| parsed.hyphenated().to_string() == value)
 }
 
 struct ImportedItem {

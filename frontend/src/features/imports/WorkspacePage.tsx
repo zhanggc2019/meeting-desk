@@ -247,7 +247,7 @@ export function WorkspacePage() {
           <div className="setup-checklist" aria-label="服务配置状态">
             <div>
               <span className="setup-index">01</span>
-              <span><strong>FunASR / ASR 转写接口</strong><small>{getProviderStatusCopy(settings.transcription)}</small></span>
+              <span><strong>离线文件 ASR 转写接口</strong><small>{getProviderStatusCopy(settings.transcription)}</small></span>
             </div>
             <div>
               <span className="setup-index">02</span>

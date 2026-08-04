@@ -27,8 +27,6 @@ interface ProviderPresetDefinition {
   description: string;
 }
 
-const DASHSCOPE_FUNASR_CN_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription";
-const DASHSCOPE_FUNASR_INTL_ENDPOINT = "https://dashscope-intl.aliyuncs.com/api/v1/services/audio/asr/transcription";
 const XIAOMI_MIMO_ASR_ENDPOINT = "https://api.xiaomimimo.com/v1/chat/completions";
 const XIAOMI_MIMO_LLM_ENDPOINT = XIAOMI_MIMO_ASR_ENDPOINT;
 const VOLCENGINE_ASR_FLASH_ENDPOINT = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
@@ -36,30 +34,6 @@ const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions";
 const ALIYUN_BAILIAN_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 
 const TRANSCRIPTION_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
-  {
-    id: "dashscope_funasr_cn",
-    label: "阿里云百炼 FunASR（中国内地）",
-    kind: "dashscope_funasr",
-    endpoint: DASHSCOPE_FUNASR_CN_ENDPOINT,
-    defaultModel: "fun-asr",
-    models: [
-      { value: "fun-asr", label: "fun-asr（推荐）" },
-      { value: "fun-asr-mtl", label: "fun-asr-mtl" },
-    ],
-    description: "适合阿里云中国内地账号，官方请求地址由软件维护。",
-  },
-  {
-    id: "dashscope_funasr_intl",
-    label: "阿里云百炼 FunASR（国际 / 新加坡）",
-    kind: "dashscope_funasr",
-    endpoint: DASHSCOPE_FUNASR_INTL_ENDPOINT,
-    defaultModel: "fun-asr",
-    models: [
-      { value: "fun-asr", label: "fun-asr（推荐）" },
-      { value: "fun-asr-mtl", label: "fun-asr-mtl" },
-    ],
-    description: "适合阿里云国际站新加坡地域账号，官方请求地址由软件维护。",
-  },
   {
     id: "xiaomi_mimo_asr",
     label: "Xiaomi MiMo 语音识别",
@@ -81,15 +55,6 @@ const TRANSCRIPTION_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
       { value: "bigmodel", label: "豆包录音文件识别大模型" },
     ],
     description: "面向新版控制台 X-Api-Key，单次请求返回录音文件转写。",
-  },
-  {
-    id: "custom_openai_compatible",
-    label: "自建 / 自定义（高级）",
-    kind: "openai_compatible",
-    endpoint: "",
-    defaultModel: "",
-    models: [],
-    description: "用于经过验证的自建 FunASR 或其他兼容服务。",
   },
 ];
 
@@ -162,15 +127,13 @@ function getPresetDefinition(target: ProviderTarget, presetId: ProviderPresetId)
 function inferPresetId(settings: PublicProviderSettings, target: ProviderTarget): ProviderPresetId {
   const allowed = getPresetDefinitions(target).some((preset) => preset.id === settings.presetId);
   if (settings.presetId && allowed) return settings.presetId;
-  if (settings.kind === "mock") return target === "transcription" ? "dashscope_funasr_cn" : "deepseek";
-  if (target === "transcription" && settings.endpoint === DASHSCOPE_FUNASR_CN_ENDPOINT) return "dashscope_funasr_cn";
-  if (target === "transcription" && settings.endpoint === DASHSCOPE_FUNASR_INTL_ENDPOINT) return "dashscope_funasr_intl";
+  if (settings.kind === "mock") return target === "transcription" ? "xiaomi_mimo_asr" : "deepseek";
   if (target === "transcription" && settings.endpoint === XIAOMI_MIMO_ASR_ENDPOINT) return "xiaomi_mimo_asr";
   if (target === "transcription" && settings.endpoint === VOLCENGINE_ASR_FLASH_ENDPOINT) return "volcengine_asr_flash";
   if (target === "minutes" && settings.endpoint === XIAOMI_MIMO_LLM_ENDPOINT) return "xiaomi_mimo_llm";
   if (target === "minutes" && settings.endpoint === DEEPSEEK_ENDPOINT) return "deepseek";
   if (target === "minutes" && settings.endpoint === ALIYUN_BAILIAN_ENDPOINT) return "aliyun_bailian";
-  return "custom_openai_compatible";
+  return target === "transcription" ? "xiaomi_mimo_asr" : "custom_openai_compatible";
 }
 
 /** 将公开设置转换为不会回填密钥的表单草稿。 */
@@ -203,10 +166,10 @@ function getEmptySettings(): PublicSettings {
   return {
     transcription: {
       ...common,
-      presetId: "dashscope_funasr_cn",
-      kind: "dashscope_funasr",
-      endpoint: DASHSCOPE_FUNASR_CN_ENDPOINT,
-      model: "fun-asr",
+      presetId: "xiaomi_mimo_asr",
+      kind: "xiaomi_mimo",
+      endpoint: XIAOMI_MIMO_ASR_ENDPOINT,
+      model: "mimo-v2.5-asr",
     },
     minutes: {
       ...common,
@@ -237,7 +200,8 @@ function isSecretConfiguredForDraft(
   draft: ProviderDraft,
   target: ProviderTarget,
 ): boolean {
-  return settings.secretConfigured && inferPresetId(settings, target) === draft.presetId;
+  if (!settings.secretConfigured || inferPresetId(settings, target) !== draft.presetId) return false;
+  return !isCustomPreset(draft.presetId) || settings.endpoint.trim() === draft.endpoint.trim();
 }
 
 interface ConnectionTestState {

@@ -7,14 +7,12 @@ use std::{
 
 use chrono::Utc;
 use serde::Deserialize;
-use serde_json::json;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 use crate::app_state::{AppState, RegisteredArtifact};
 use crate::commands::CommandError;
-use crate::config;
 use crate::domain::{PersistedMeetingInput, SafeTaskError, TaskAction, TaskRecord, TaskStatus};
 use crate::ingest::{AudioArtifactRef, AudioSourceKind, IngestPolicy, StagingMetadata};
 use crate::minutes::{
@@ -22,16 +20,101 @@ use crate::minutes::{
     ValidationOptions, BUILTIN_TEMPLATE_VERSION, MEETING_MINUTES_SCHEMA_VERSION,
 };
 use crate::providers::{
-    CancellationToken, ManagedAudioArtifact, MinutesProvider, MockConfig, MockProvider,
-    MockScenario, ProviderCallContext, ProviderError, TranscriptionOptions, TranscriptionProvider,
-    TranscriptionRequest,
+    build_minutes_provider, build_transcription_provider, CancellationToken, ManagedAudioArtifact,
+    MinutesProvider, ProviderCallContext, ProviderCredential, ProviderError, TranscriptionOptions,
+    TranscriptionProvider, TranscriptionRequest,
 };
+use crate::secrets::{self, SecretKind};
 use crate::storage::MeetingRepository;
 
 /// 表示任务列表的前端筛选条件。
 #[derive(Debug, Deserialize)]
 pub struct TaskQuery {
     pub filter: String,
+}
+
+/// Holds the provider-neutral adapters and credentials used by one processing attempt.
+#[derive(Clone)]
+struct ProcessingProviders {
+    transcription: Arc<dyn TranscriptionProvider>,
+    minutes: Arc<dyn MinutesProvider>,
+    transcription_credential: Option<Arc<ProviderCredential>>,
+    minutes_credential: Option<Arc<ProviderCredential>>,
+    transcription_timeout_ms: u64,
+    minutes_timeout_ms: u64,
+    max_attempts: u32,
+}
+
+/// Builds a production runtime only from backend-evaluated settings and scoped credentials.
+fn load_processing_providers(state: &AppState) -> Result<ProcessingProviders, CommandError> {
+    let settings = crate::commands::settings::load_evaluated_settings(state)?;
+    if !settings.transcription.ready || !settings.minutes.ready {
+        return Err(CommandError::new(
+            "provider_not_configured",
+            "请先完成语音转写和会议纪要服务配置",
+            false,
+        ));
+    }
+    let transcription = build_transcription_provider(&settings.transcription)
+        .map_err(|error| provider_configuration_error(error.safe_message))?;
+    let minutes = build_minutes_provider(&settings.minutes)
+        .map_err(|error| provider_configuration_error(error.safe_message))?;
+    let transcription_credential = load_provider_credential(
+        SecretKind::Transcription,
+        settings.transcription.credential_preset_id.as_deref(),
+    )?;
+    let minutes_credential = load_provider_credential(
+        SecretKind::Minutes,
+        settings.minutes.credential_preset_id.as_deref(),
+    )?;
+    Ok(ProcessingProviders {
+        transcription,
+        minutes,
+        transcription_credential,
+        minutes_credential,
+        transcription_timeout_ms: settings.transcription.request_timeout_ms,
+        minutes_timeout_ms: settings.minutes.request_timeout_ms,
+        max_attempts: settings
+            .transcription
+            .max_retries
+            .max(settings.minutes.max_retries)
+            .saturating_add(1),
+    })
+}
+
+/// Reads one exact provider binding without exposing the credential to IPC or logs.
+fn load_provider_credential(
+    kind: SecretKind,
+    binding_id: Option<&str>,
+) -> Result<Option<Arc<ProviderCredential>>, CommandError> {
+    let binding_id = binding_id.ok_or_else(|| {
+        CommandError::new(
+            "provider_not_configured",
+            "Provider 凭据绑定无效，请重新保存服务设置",
+            false,
+        )
+    })?;
+    let secret = secrets::read_secret_for_binding(kind, binding_id).map_err(|_| {
+        CommandError::new(
+            "credential_store_error",
+            "无法访问 Windows 凭据管理器",
+            true,
+        )
+    })?;
+    let secret = secret
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            CommandError::new(
+                "provider_not_configured",
+                "Provider API Key 不存在，请重新保存服务设置",
+                false,
+            )
+        })?;
+    Ok(Some(Arc::new(ProviderCredential::new(secret))))
+}
+
+fn provider_configuration_error(safe_message: String) -> CommandError {
+    CommandError::new("provider_configuration_invalid", safe_message, false)
 }
 
 /// 按导入策略复核整个逻辑批次，并一次性解析全部受管音频引用。
@@ -78,7 +161,7 @@ fn resolve_batch_artifacts(
     Ok(artifacts)
 }
 
-/// 为每个已导入 artifact 创建独立任务，并启动后台 mock 流程。
+/// 为每个已导入 artifact 创建独立任务，并启动后台 Provider 流程。
 #[tauri::command]
 pub fn create_processing_tasks(
     state: State<'_, AppState>,
@@ -120,21 +203,7 @@ pub fn create_processing_tasks(
             false,
         ));
     }
-    let settings = read_public_settings(&state.repository)?;
-    if settings.transcription.kind == "mock" || settings.minutes.kind == "mock" {
-        return Err(CommandError::new(
-            "legacy_mock_disabled",
-            "旧版演示模式已停用，请在服务设置中重新配置转写和纪要服务",
-            false,
-        ));
-    }
-    if settings.transcription.kind != "mock" || settings.minutes.kind != "mock" {
-        return Err(CommandError::new(
-            "real_provider_contract_unverified",
-            "真实 Provider 处理链路尚未完成验证，当前不能创建处理任务",
-            false,
-        ));
-    }
+    let providers = load_processing_providers(state.inner())?;
     let registry = state.artifacts.lock().map_err(|_| {
         CommandError::new("artifact_registry_unavailable", "音频导入状态不可用", true)
     })?;
@@ -148,12 +217,12 @@ pub fn create_processing_tasks(
                 &artifact,
                 batch_id.clone(),
                 &template_id,
-                settings.transcription.max_retries.saturating_add(1),
+                providers.max_attempts,
             );
             (task, artifact)
         })
         .collect::<Vec<_>>();
-    start_new_mock_tasks(&state, tasks, settings.transcription.request_timeout_ms)
+    start_new_tasks(&state, tasks, providers)
 }
 
 /// 返回按更新时间倒序排列且符合筛选条件的任务。
@@ -273,6 +342,7 @@ pub fn retry_processing_task(
                 false,
             )
         })?;
+    let providers = load_processing_providers(state.inner())?;
     task.status = TaskStatus::Queued;
     task.attempt = task.attempt.saturating_add(1);
     task.progress = Some(0.0);
@@ -280,13 +350,7 @@ pub fn retry_processing_task(
     task.available_actions = vec![TaskAction::Cancel];
     task.updated_at = Utc::now().to_rfc3339();
     state.repository.save_task(&task)?;
-    let settings = read_public_settings(&state.repository)?;
-    start_mock_task(
-        &state,
-        task.clone(),
-        artifact,
-        settings.transcription.request_timeout_ms,
-    )?;
+    start_task(&state, task.clone(), artifact, providers)?;
     Ok(task)
 }
 
@@ -357,9 +421,13 @@ pub fn recover_interrupted_tasks(
 ) -> Result<(), crate::storage::StorageError> {
     for mut task in repository.list_tasks()? {
         if task.status == TaskStatus::CancelRequested {
+            let last_active_at = task.updated_at.clone();
+            finish_processing_attempt_at(&mut task, &last_active_at);
             mark_cancelled(&mut task);
             repository.save_task(&task)?;
         } else if !task.status.is_terminal() && task.status != TaskStatus::Interrupted {
+            let last_active_at = task.updated_at.clone();
+            finish_processing_attempt_at(&mut task, &last_active_at);
             task.status = TaskStatus::Interrupted;
             task.progress = None;
             if task.attempt < task.max_attempts {
@@ -445,6 +513,7 @@ fn restart_with_reselected_artifact(
         .ok_or_else(|| {
             CommandError::new("artifact_not_found", "重新选择的音频暂存记录不存在", false)
         })?;
+    let providers = load_processing_providers(state.inner())?;
     task.artifact_id = artifact.id.clone();
     task.display_name = artifact.display_name.clone();
     task.status = TaskStatus::Queued;
@@ -454,13 +523,7 @@ fn restart_with_reselected_artifact(
     task.available_actions = vec![TaskAction::Cancel];
     task.updated_at = Utc::now().to_rfc3339();
     state.repository.save_task(&task)?;
-    let settings = read_public_settings(&state.repository)?;
-    start_mock_task(
-        state,
-        task.clone(),
-        artifact,
-        settings.transcription.request_timeout_ms,
-    )?;
+    start_task(state, task.clone(), artifact, providers)?;
     Ok(task)
 }
 
@@ -502,6 +565,8 @@ fn new_task(
         error: None,
         created_at: now.clone(),
         updated_at: now,
+        processing_started_at: None,
+        processing_duration_ms: Some(0),
         available_actions: vec![TaskAction::Cancel],
     }
 }
@@ -516,11 +581,11 @@ struct TaskRuntime {
     task_gate: Arc<Mutex<()>>,
 }
 
-/// 原子登记并保存一组新任务，随后为每项启动独立 Mock 处理流程。
-fn start_new_mock_tasks(
+/// 原子登记并保存一组新任务，随后为每项启动独立 Provider 处理流程。
+fn start_new_tasks(
     state: &State<'_, AppState>,
     tasks: Vec<(TaskRecord, RegisteredArtifact)>,
-    timeout_ms: u64,
+    providers: ProcessingProviders,
 ) -> Result<Vec<TaskRecord>, CommandError> {
     let visible_tasks = tasks
         .iter()
@@ -552,18 +617,18 @@ fn start_new_mock_tasks(
     }
     drop(active);
     for ((task, artifact), (_, token)) in tasks.into_iter().zip(registrations) {
-        spawn_registered_mock_task(state, task, artifact, token, timeout_ms);
+        spawn_registered_task(state, task, artifact, token, providers.clone());
     }
     Ok(visible_tasks)
 }
 
-/// 启动已经登记取消令牌的单个后台 Mock 处理流程。
-fn spawn_registered_mock_task(
+/// 启动已经登记取消令牌的单个后台 Provider 处理流程。
+fn spawn_registered_task(
     state: &State<'_, AppState>,
     task: TaskRecord,
     artifact: RegisteredArtifact,
     token: CancellationToken,
-    timeout_ms: u64,
+    providers: ProcessingProviders,
 ) {
     let runtime = TaskRuntime {
         repository: state.repository.clone(),
@@ -573,7 +638,7 @@ fn spawn_registered_mock_task(
         task_gate: state.task_gate.clone(),
     };
     tauri::async_runtime::spawn(async move {
-        if run_mock_task(runtime, task, artifact, token, timeout_ms)
+        if run_task(runtime, providers, task, artifact, token)
             .await
             .is_err()
         {
@@ -583,11 +648,11 @@ fn spawn_registered_mock_task(
 }
 
 /// 注册取消令牌并在 Tauri 异步运行时启动处理流程。
-fn start_mock_task(
+fn start_task(
     state: &State<'_, AppState>,
     task: TaskRecord,
     artifact: RegisteredArtifact,
-    timeout_ms: u64,
+    providers: ProcessingProviders,
 ) -> Result<(), CommandError> {
     let token = CancellationToken::new();
     let mut active = state
@@ -603,26 +668,26 @@ fn start_mock_task(
     }
     active.insert(task.id.clone(), token.clone());
     drop(active);
-    spawn_registered_mock_task(state, task, artifact, token, timeout_ms);
+    spawn_registered_task(state, task, artifact, token, providers);
     Ok(())
 }
 
-/// 通过真实 MockProvider 串联转写、Prompt、纪要验证和 SQLite 保存。
-async fn run_mock_task(
+/// 通过 Provider 接口串联转写、Prompt、纪要验证和 SQLite 保存。
+async fn run_task(
     runtime: TaskRuntime,
+    providers: ProcessingProviders,
     mut task: TaskRecord,
     artifact: RegisteredArtifact,
     token: CancellationToken,
-    timeout_ms: u64,
 ) -> Result<(), crate::storage::StorageError> {
-    let result = run_mock_pipeline(
+    let result = run_provider_pipeline(
         &runtime.repository,
         runtime.importer.clone(),
+        &providers,
         &mut task,
         artifact,
         token.clone(),
         &runtime.task_gate,
-        timeout_ms,
     )
     .await;
     let _task_guard = runtime
@@ -670,6 +735,7 @@ async fn run_mock_task(
             task.updated_at = Utc::now().to_rfc3339();
         }
     }
+    finish_processing_attempt(&mut task);
     let persist_result = persist_terminal_task(&runtime.repository, &mut task);
     runtime
         .cancellations
@@ -679,15 +745,15 @@ async fn run_mock_task(
     persist_result
 }
 
-/// 执行可取消的 Mock 处理流水线并只持久化已验证结果。
-async fn run_mock_pipeline(
+/// 执行可取消的 Provider 处理流水线并只持久化已验证结果。
+async fn run_provider_pipeline(
     repository: &MeetingRepository,
     importer: Arc<crate::ingest::OfflineAudioImporter>,
+    providers: &ProcessingProviders,
     task: &mut TaskRecord,
     artifact: RegisteredArtifact,
     token: CancellationToken,
     task_gate: &Arc<Mutex<()>>,
-    timeout_ms: u64,
 ) -> Result<(), SafeTaskError> {
     update_task(
         repository,
@@ -717,29 +783,6 @@ async fn run_mock_pipeline(
         })
     });
     let managed = ManagedAudioArtifact::new(artifact_ref, reader);
-    let candidate_fixture = json!({
-        "schemaVersion": MEETING_MINUTES_SCHEMA_VERSION,
-        "title": "Mock 会议纪要",
-        "titleSource": "generated",
-        "meetingTime": {"startAt": null, "endAt": null},
-        "participants": [],
-        "summary": "Mock Provider 已完成离线音频处理流程验证。",
-        "topics": [],
-        "conclusions": [],
-        "decisions": [],
-        "actionItems": [],
-        "risksAndIssues": []
-    });
-    let provider = MockProvider::new(
-        MockConfig {
-            scenario: MockScenario::Success,
-            delay_ms: 0,
-        },
-        "这是 Mock Provider 生成的匿名测试逐字稿，用于验证本地处理闭环。".to_string(),
-        candidate_fixture,
-        MEETING_MINUTES_SCHEMA_VERSION.to_string(),
-    )
-    .map_err(provider_error)?;
     update_task(
         repository,
         task,
@@ -752,16 +795,17 @@ async fn run_mock_pipeline(
         task.id.clone(),
         Uuid::new_v4().to_string(),
         token.clone(),
-        Duration::from_millis(timeout_ms),
+        Duration::from_millis(providers.transcription_timeout_ms),
     );
-    let transcript = provider
+    let transcript = providers
+        .transcription
         .transcribe(
             &context,
             TranscriptionRequest {
                 artifact: managed,
                 options: TranscriptionOptions::default(),
             },
-            None,
+            providers.transcription_credential.as_deref(),
         )
         .await
         .map_err(provider_error)?;
@@ -794,10 +838,15 @@ async fn run_mock_pipeline(
         task.id.clone(),
         Uuid::new_v4().to_string(),
         token.clone(),
-        Duration::from_millis(timeout_ms),
+        Duration::from_millis(providers.minutes_timeout_ms),
     );
-    let candidate = provider
-        .generate_candidate(&minutes_context, built_prompt.into_provider_request(), None)
+    let candidate = providers
+        .minutes
+        .generate_candidate(
+            &minutes_context,
+            built_prompt.into_provider_request(),
+            providers.minutes_credential.as_deref(),
+        )
         .await
         .map_err(provider_error)?;
     update_task(
@@ -879,6 +928,9 @@ fn update_task(
     if token.is_cancelled() {
         return Err(cancelled_error());
     }
+    if task.processing_started_at.is_none() {
+        task.processing_started_at = Some(Utc::now().to_rfc3339());
+    }
     task.status = status;
     task.progress = progress;
     task.updated_at = Utc::now().to_rfc3339();
@@ -902,18 +954,6 @@ fn find_task(repository: &MeetingRepository, task_id: &str) -> Result<TaskRecord
         .into_iter()
         .find(|task| task.id == task_id)
         .ok_or_else(|| CommandError::new("task_not_found", "任务不存在或已被移除", false))
-}
-
-/// 读取公开设置；不存在时使用环境变量与真实服务安全默认值。
-fn read_public_settings(
-    repository: &MeetingRepository,
-) -> Result<crate::domain::PublicSettings, CommandError> {
-    repository
-        .get_setting("provider_settings_v1")?
-        .map(|value| serde_json::from_str(&value))
-        .transpose()
-        .map_err(|_| CommandError::new("settings_invalid", "本地配置格式无效", false))
-        .map(|value| value.unwrap_or_else(config::provider_settings_from_environment))
 }
 
 /// 把 Provider 安全错误转换为前端任务错误。
@@ -999,11 +1039,36 @@ fn cancelled_error() -> SafeTaskError {
 
 /// 将任务设置为已取消终态。
 fn mark_cancelled(task: &mut TaskRecord) {
+    finish_processing_attempt(task);
     task.status = TaskStatus::Cancelled;
     task.progress = None;
     task.error = None;
     task.available_actions.clear();
     task.updated_at = Utc::now().to_rfc3339();
+}
+
+/// Closes the current attempt and accumulates only time spent actively processing.
+fn finish_processing_attempt(task: &mut TaskRecord) {
+    let ended_at = Utc::now().to_rfc3339();
+    finish_processing_attempt_at(task, &ended_at);
+}
+
+/// Uses an explicit end bound during startup recovery so offline time is never counted.
+fn finish_processing_attempt_at(task: &mut TaskRecord, ended_at: &str) {
+    let Some(started_at) = task.processing_started_at.take() else {
+        return;
+    };
+    let elapsed_ms = chrono::DateTime::parse_from_rfc3339(ended_at)
+        .ok()
+        .zip(chrono::DateTime::parse_from_rfc3339(&started_at).ok())
+        .map(|(ended, started)| ended.signed_duration_since(started).num_milliseconds())
+        .unwrap_or(0)
+        .max(0) as u64;
+    task.processing_duration_ms = Some(
+        task.processing_duration_ms
+            .unwrap_or_default()
+            .saturating_add(elapsed_ms),
+    );
 }
 
 /// 从显示文件名生成不含扩展名的安全标题。
@@ -1020,10 +1085,12 @@ fn display_stem(display_name: &str) -> String {
 mod tests {
     use std::fs;
 
+    use serde_json::json;
     use tempfile::TempDir;
 
     use super::*;
     use crate::ingest::{ImportRequest, ImportSelectionMode, IngestPolicy, OfflineAudioImporter};
+    use crate::providers::{MockConfig, MockProvider, MockScenario};
 
     /// 生成 100 毫秒、16 kHz、单声道 PCM WAV 测试音频。
     fn valid_wav() -> Vec<u8> {
@@ -1054,6 +1121,46 @@ mod tests {
             mime_type: "audio/wav".to_string(),
             byte_length,
             duration_ms: None,
+        }
+    }
+
+    /// Injects the same deterministic mock behind both production provider interfaces.
+    fn mock_processing_providers() -> ProcessingProviders {
+        let candidate = json!({
+            "schemaVersion": MEETING_MINUTES_SCHEMA_VERSION,
+            "title": "Mock 会议纪要",
+            "titleSource": "generated",
+            "meetingTime": {"startAt": null, "endAt": null},
+            "participants": [],
+            "summary": "Mock Provider 已完成离线音频处理流程验证。",
+            "topics": [],
+            "conclusions": [],
+            "decisions": [],
+            "actionItems": [],
+            "risksAndIssues": []
+        });
+        let provider = Arc::new(
+            MockProvider::new(
+                MockConfig {
+                    scenario: MockScenario::Success,
+                    delay_ms: 0,
+                },
+                "这是 Mock Provider 生成的匿名测试逐字稿，用于验证本地处理闭环。".to_string(),
+                candidate,
+                MEETING_MINUTES_SCHEMA_VERSION.to_string(),
+            )
+            .expect("create mock provider"),
+        );
+        let transcription: Arc<dyn TranscriptionProvider> = provider.clone();
+        let minutes: Arc<dyn MinutesProvider> = provider;
+        ProcessingProviders {
+            transcription,
+            minutes,
+            transcription_credential: None,
+            minutes_credential: None,
+            transcription_timeout_ms: 5_000,
+            minutes_timeout_ms: 5_000,
+            max_attempts: 3,
         }
     }
 
@@ -1144,9 +1251,15 @@ mod tests {
             cancellations,
             task_gate,
         };
-        run_mock_task(runtime, task, artifact, CancellationToken::new(), 5_000)
-            .await
-            .expect("persist terminal task");
+        run_task(
+            runtime,
+            mock_processing_providers(),
+            task,
+            artifact,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("persist terminal task");
 
         let completed = repository
             .list_tasks()
@@ -1191,6 +1304,8 @@ mod tests {
         let mut active = new_task(&artifact, None, "standard_meeting", 3);
         active.id = "active-recovery".to_string();
         active.status = TaskStatus::Transcribing;
+        active.processing_started_at = Some("2026-07-21T01:00:00Z".to_string());
+        active.updated_at = "2026-07-21T01:00:05Z".to_string();
         repository.save_task(&active).expect("save active task");
         let mut exhausted = new_task(&artifact, None, "standard_meeting", 1);
         exhausted.id = "exhausted-recovery".to_string();
@@ -1212,6 +1327,8 @@ mod tests {
             .find(|task| task.id == active.id)
             .expect("interrupted task");
         assert_eq!(interrupted.status, TaskStatus::Interrupted);
+        assert_eq!(interrupted.processing_duration_ms, Some(5_000));
+        assert!(interrupted.processing_started_at.is_none());
         assert_eq!(
             interrupted.available_actions,
             vec![TaskAction::ReselectFile]
@@ -1309,7 +1426,7 @@ mod tests {
             cancellations: cancellations.clone(),
             task_gate: Arc::new(Mutex::new(())),
         };
-        run_mock_task(runtime, task, artifact, token, 5_000)
+        run_task(runtime, mock_processing_providers(), task, artifact, token)
             .await
             .expect("persist cancellation");
 

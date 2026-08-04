@@ -238,12 +238,26 @@ impl MeetingRepository {
         .transpose()
     }
 
-    /// 删除会议及其级联正文记录，不接触用户原始音频。
+    /// 删除会议、级联正文和关联任务，不接触用户原始音频。
     pub fn delete_meeting(&self, id: &str) -> Result<bool, StorageError> {
-        Ok(self
-            .lock()?
-            .execute("DELETE FROM meetings WHERE id = ?1", [id])?
-            > 0)
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let task_rows = {
+            let mut statement = transaction.prepare("SELECT id, record_json FROM tasks")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        for (task_id, record_json) in task_rows {
+            let task: TaskRecord = serde_json::from_str(&record_json)?;
+            if task.meeting_id.as_deref() == Some(id) {
+                transaction.execute("DELETE FROM tasks WHERE id = ?1", [task_id])?;
+            }
+        }
+        let deleted = transaction.execute("DELETE FROM meetings WHERE id = ?1", [id])? > 0;
+        transaction.commit()?;
+        Ok(deleted)
     }
 
     /// 保存非秘密设置字符串。
@@ -314,6 +328,8 @@ mod tests {
             error: None,
             created_at: now.clone(),
             updated_at: now,
+            processing_started_at: None,
+            processing_duration_ms: Some(0),
             available_actions: vec![TaskAction::Cancel],
         }
     }
@@ -330,6 +346,11 @@ mod tests {
         assert_eq!(meetings.len(), 1);
         let detail = repository.get_meeting("meeting-1").expect("get meeting");
         assert_eq!(detail.expect("detail").transcript, "这是一段人工测试文本。");
+        let mut task = task_fixture("meeting-task");
+        task.meeting_id = Some("meeting-1".to_string());
+        task.status = TaskStatus::Completed;
+        task.available_actions = vec![TaskAction::OpenMeeting];
+        repository.save_task(&task).expect("save related task");
         assert!(repository
             .delete_meeting("meeting-1")
             .expect("delete meeting"));
@@ -337,6 +358,7 @@ mod tests {
             .get_meeting("meeting-1")
             .expect("get deleted")
             .is_none());
+        assert!(repository.list_tasks().expect("list tasks").is_empty());
     }
 
     /// 验证设置写入不会要求任何秘密字段。

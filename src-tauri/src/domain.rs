@@ -50,7 +50,7 @@ pub struct SafeTaskError {
 }
 
 /// 表示任务列表和状态事件使用的公开记录。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskRecord {
     pub id: String,
@@ -66,6 +66,10 @@ pub struct TaskRecord {
     pub error: Option<SafeTaskError>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub processing_started_at: Option<String>,
+    #[serde(default)]
+    pub processing_duration_ms: Option<u64>,
     pub available_actions: Vec<TaskAction>,
 }
 
@@ -89,7 +93,7 @@ pub struct MeetingListItem {
 }
 
 /// 表示会议详情，包括敏感逐字稿和已验证纪要。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingDetail {
     pub id: String,
@@ -103,7 +107,7 @@ pub struct MeetingDetail {
 }
 
 /// 表示待写入 SQLite 的完整会议结果。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PersistedMeetingInput {
     pub id: String,
     pub source_name: String,

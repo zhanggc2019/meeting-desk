@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::Path;
 
 use serde::Serialize;
@@ -11,7 +12,7 @@ use crate::domain::{TaskRecord, TaskStatus};
 use crate::minutes::{render_minutes_markdown, MeetingMinutes};
 
 /// 表示前端会议列表使用的摘要。
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingSummary {
     pub id: String,
@@ -25,7 +26,7 @@ pub struct MeetingSummary {
 }
 
 /// 表示前端会议详情使用的稳定结构。
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingDetailResponse {
     pub id: String,
@@ -131,8 +132,11 @@ fn processing_duration_for_meeting(tasks: &[TaskRecord], meeting_id: &str) -> Op
         .and_then(task_processing_duration_ms)
 }
 
-/// 计算单个完成任务的创建到完成墙钟差值，异常或倒退时间返回未知。
+/// 优先使用累计处理时间；旧任务再回退到创建到完成的墙钟差值。
 fn task_processing_duration_ms(task: &TaskRecord) -> Option<u64> {
+    if let Some(duration_ms) = task.processing_duration_ms {
+        return Some(duration_ms);
+    }
     let created_at = chrono::DateTime::parse_from_rfc3339(&task.created_at).ok()?;
     let updated_at = chrono::DateTime::parse_from_rfc3339(&task.updated_at).ok()?;
     updated_at
@@ -211,7 +215,7 @@ pub async fn export_meeting_markdown(
     };
     ensure_markdown_extension(&path)?;
     let markdown = render_export_markdown(&minutes, &detail.transcript);
-    tauri::async_runtime::spawn_blocking(move || std::fs::write(path, markdown))
+    tauri::async_runtime::spawn_blocking(move || write_markdown_atomically(&path, &markdown))
         .await
         .map_err(|_| CommandError::new("export_failed", "Markdown 导出未完成", true))?
         .map_err(|_| CommandError::new("export_failed", "无法写入所选文件", true))?;
@@ -219,6 +223,21 @@ pub async fn export_meeting_markdown(
         status: "exported",
         display_name: Some(display_name),
     })
+}
+
+/// Writes and flushes in the destination directory before atomically replacing the target.
+fn write_markdown_atomically(path: &Path, markdown: &str) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "missing destination directory",
+        )
+    })?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    staged.write_all(markdown.as_bytes())?;
+    staged.as_file().sync_all()?;
+    staged.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// 把旧记录中的 segments 数组兼容成完整 Transcript 对象。
@@ -361,16 +380,39 @@ mod tests {
             error: None,
             created_at: "2026-07-21T01:00:00Z".to_string(),
             updated_at: "2026-07-21T01:02:03Z".to_string(),
+            processing_started_at: None,
+            processing_duration_ms: Some(42_000),
             available_actions: vec![TaskAction::OpenMeeting],
         };
 
         assert_eq!(
             processing_duration_for_meeting(std::slice::from_ref(&task), "meeting-1"),
+            Some(42_000)
+        );
+        let mut legacy_task = task.clone();
+        legacy_task.processing_duration_ms = None;
+        assert_eq!(
+            processing_duration_for_meeting(std::slice::from_ref(&legacy_task), "meeting-1"),
             Some(123_000)
         );
         assert_eq!(
             processing_duration_for_meeting(&[task], "other-meeting"),
             None
+        );
+    }
+
+    /// 验证原子导出能够完整替换已有文件，不会留下部分 Markdown。
+    #[test]
+    fn atomically_replaces_existing_markdown() {
+        let directory = tempfile::TempDir::new().expect("create export directory");
+        let target = directory.path().join("minutes.md");
+        std::fs::write(&target, "old content").expect("write old export");
+
+        write_markdown_atomically(&target, "new complete content").expect("replace export");
+
+        assert_eq!(
+            std::fs::read_to_string(target).expect("read export"),
+            "new complete content"
         );
     }
 }

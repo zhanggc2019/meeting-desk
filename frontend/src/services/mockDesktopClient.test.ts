@@ -6,10 +6,10 @@ async function createConfiguredClient() {
   const client = createMockDesktopClient();
   await client.saveProviderSettings({
     transcription: {
-      presetId: "dashscope_funasr_cn",
-      kind: "dashscope_funasr",
-      endpoint: "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
-      model: "fun-asr",
+      presetId: "xiaomi_mimo_asr",
+      kind: "xiaomi_mimo",
+      endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
+      model: "mimo-v2.5-asr",
       apiKey: "test-transcription-key",
       connectTimeoutMs: 5000,
       requestTimeoutMs: 60_000,
@@ -41,10 +41,10 @@ describe("浏览器测试 DesktopClient", () => {
     const client = createMockDesktopClient();
     const saved = await client.saveProviderSettings({
       transcription: {
-        presetId: "custom_openai_compatible",
-        kind: "openai_compatible",
-        endpoint: "https://example.test/asr",
-        model: "asr-test",
+        presetId: "xiaomi_mimo_asr",
+        kind: "xiaomi_mimo",
+        endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
+        model: "mimo-v2.5-asr",
         apiKey: "test-only-secret-value",
         connectTimeoutMs: 5000,
         requestTimeoutMs: 60_000,
@@ -62,7 +62,7 @@ describe("浏览器测试 DesktopClient", () => {
     });
 
     expect(saved.transcription.secretConfigured).toBe(true);
-    expect(saved.transcription.presetId).toBe("custom_openai_compatible");
+    expect(saved.transcription.presetId).toBe("xiaomi_mimo_asr");
     expect(saved.transcription).not.toHaveProperty("apiKey");
     expect(JSON.stringify(saved)).not.toContain("test-only-secret-value");
   });
@@ -74,10 +74,10 @@ describe("浏览器测试 DesktopClient", () => {
 
     await client.saveProviderSettings({
       transcription: {
-        presetId: "dashscope_funasr_cn",
-        kind: "dashscope_funasr",
-        endpoint: "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
-        model: "fun-asr",
+        presetId: "xiaomi_mimo_asr",
+        kind: "xiaomi_mimo",
+        endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
+        model: "mimo-v2.5-asr",
         connectTimeoutMs: 5000,
         requestTimeoutMs: 60_000,
         maxRetries: 1,
@@ -102,6 +102,46 @@ describe("浏览器测试 DesktopClient", () => {
       ok: false,
       safeMessage: "浏览器测试环境不发送网络请求，请在 Windows 桌面应用中测试连接",
     });
+  });
+
+  it("自定义纪要地址变化时不会沿用旧地址的密钥状态", async () => {
+    const client = createMockDesktopClient();
+    const customMinutes = {
+      presetId: "custom_openai_compatible",
+      kind: "openai_compatible",
+      model: "test-model",
+      connectTimeoutMs: 5000,
+      requestTimeoutMs: 60_000,
+      maxRetries: 1,
+    } as const;
+    const transcription = {
+      presetId: "xiaomi_mimo_asr",
+      kind: "xiaomi_mimo",
+      endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
+      model: "mimo-v2.5-asr",
+      connectTimeoutMs: 5000,
+      requestTimeoutMs: 60_000,
+      maxRetries: 1,
+    } as const;
+
+    await client.saveProviderSettings({
+      transcription: { ...transcription, apiKey: "test-transcription-key" },
+      minutes: {
+        ...customMinutes,
+        endpoint: "https://first.example.test/v1/chat/completions",
+        apiKey: "test-minutes-key",
+      },
+    });
+    const changed = await client.saveProviderSettings({
+      transcription,
+      minutes: {
+        ...customMinutes,
+        endpoint: "https://second.example.test/v1/chat/completions",
+      },
+    });
+
+    expect(changed.minutes.secretConfigured).toBe(false);
+    expect(changed.minutes.ready).toBe(false);
   });
 
   it("两个服务未配置完成时拒绝注册音频", async () => {

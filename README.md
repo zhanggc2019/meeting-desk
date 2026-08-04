@@ -15,7 +15,7 @@
 - ✅ 服务未配置完成时会禁用媒体选择，避免创建无法执行的任务。
 - ✅ 支持启动时静默检查 GitHub Release；发现签名更新后由用户确认下载、安装和重启。
 - ✅ GitHub Actions 可在 `main` 分支执行 Windows CI，并在 `v*` 标签上生成签名 NSIS 安装包和 `latest.json`。
-- ⚠️ 阿里云百炼 Fun-ASR、Xiaomi MiMo、DeepSeek、阿里云百炼通义千问及第三方 OpenAI-compatible 预设已完成，但真实 API 互操作仍为 **BLOCKED**。当前版本不会把未验证的真实请求伪装为成功。
+- ⚠️ Xiaomi MiMo、火山引擎、DeepSeek、阿里云百炼通义千问及第三方 OpenAI-compatible 已接入 Provider 编排，但真实 API 互操作仍为 **BLOCKED**。当前版本不会把未验证的真实请求伪装为成功。
 
 ## 功能
 
@@ -107,7 +107,6 @@ pnpm tauri:dev
 
 | 用途 | 内置预设 | 模型 |
 | --- | --- | --- |
-| 语音转写 | 阿里云百炼 Fun-ASR（中国内地 / 国际） | `fun-asr`、`fun-asr-mtl` |
 | 语音转写 | Xiaomi MiMo | `mimo-v2.5-asr` |
 | 语音转写 | 火山引擎录音文件识别（极速版，新控制台） | `bigmodel` |
 | 会议纪要 | Xiaomi MiMo 大模型 | `mimo-v2.5`、`mimo-v2.5-pro` |
@@ -115,7 +114,7 @@ pnpm tauri:dev
 | 会议纪要 | 阿里云百炼（通义千问） | `qwen-plus`、`qwen-flash`、`qwen-max` |
 | 会议纪要 | 第三方 OpenAI Chat Completions | 自定义完整地址与模型名，读取 `choices[0].message.content` |
 
-只有“自建 / 自定义（高级）”和第三方 OpenAI Chat Completions 预设会显示可编辑的服务地址与模型名。托管预设的地址和模型白名单由 Rust 后端校验，前端不能覆盖。MiMo ASR 与 MiMo 大模型共用官方 Chat Completions 地址，但分别使用独立预设、模型白名单和密钥绑定，不会根据 URL 混淆业务类型。
+只有第三方 OpenAI Chat Completions 纪要预设会显示可编辑的服务地址与模型名。托管预设的地址和模型白名单由 Rust 后端校验，前端不能覆盖。MiMo ASR 与 MiMo 大模型共用官方 Chat Completions 地址，但分别使用独立预设、模型白名单和密钥绑定，不会根据 URL 混淆业务类型。
 
 API Key 的处理原则：
 
@@ -139,7 +138,7 @@ MiMo 与火山引擎录音文件适配边界：
 pnpm tauri:dev
 ```
 
-真实 Fun-ASR 仍需要实现供应商专用的“文件上传 → 异步提交 → 轮询 → 下载并归一化结果”适配器；配置预设不代表该链路已经完成。详细边界见 [Provider API 契约](docs/api-contract.md)。
+Fun-ASR 仍需要实现供应商专用的“文件上传 → 异步提交 → 轮询 → 下载并归一化结果”适配器，因此正式设置界面不提供该预设。详细边界见 [Provider API 契约](docs/api-contract.md)。
 
 ## 测试
 
@@ -240,7 +239,7 @@ docs/                      架构、API、安全、测试和 UI 文档
 ## 已知限制
 
 - 真实 Fun-ASR 媒体上传、异步任务轮询和响应归一化尚未实现。
-- Xiaomi MiMo 与火山引擎适配器、预设和 mock HTTP 合约已实现，但真实任务编排总闸门仍未开放；当前版本不会上传真实录音。
+- Xiaomi MiMo 与火山引擎适配器、预设、mock HTTP 合约和真实任务编排已接通；在用户明确配置两类 Provider 后，任务会向所选服务发送音频和逐字稿。
 - 火山引擎 Provider 已支持 HTTPS 文件 URL，桌面端 URL 导入的 IPC、持久化和界面尚未实现。
 - Xiaomi MiMo、DeepSeek、阿里云百炼及第三方兼容服务的真实请求与结构化响应仍未使用有效密钥完成互操作验证。
 - 长转写的 map/reduce 分块总结尚未实现。

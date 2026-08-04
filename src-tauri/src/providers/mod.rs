@@ -4,6 +4,7 @@ mod base64_audio;
 mod cancellation;
 mod contract;
 mod error;
+mod factory;
 mod http;
 mod mock;
 mod openai_compatible;
@@ -21,6 +22,7 @@ pub use contract::{
     TranscriptionOptions, TranscriptionProvider, TranscriptionRequest, UrlTranscriptionRequest,
 };
 pub use error::{ProviderError, ProviderErrorCategory};
+pub use factory::{build_minutes_provider, build_transcription_provider};
 pub use http::{
     AuthStrategy, HttpExecutor, HttpMethod, MultipartBody, MultipartFile,
     ProviderCredentialPlacement, ProviderHttpBody, ProviderHttpConfig, ProviderHttpRequest,

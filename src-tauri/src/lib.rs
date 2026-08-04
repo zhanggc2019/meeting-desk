@@ -25,8 +25,15 @@ pub fn run() {
             let policy =
                 ingest::IngestPolicy::new(2 * 1024 * 1024 * 1024, 32, 8 * 1024 * 1024 * 1024)?;
             let importer = ingest::OfflineAudioImporter::new(data_dir.join("audio"), policy)?;
-            // 启动清理采用 best-effort；Windows 文件锁不能阻止用户打开应用，遗留文件会在下次启动重试。
-            let _ = importer.clear_staged_files();
+            // 启动清理采用 best-effort；只持久化待重试状态，不记录受管文件名或路径。
+            let cleanup_pending = importer
+                .clear_staged_files()
+                .map(|report| report.failed > 0)
+                .unwrap_or(true);
+            let _ = repository.set_setting(
+                "staging_cleanup_pending",
+                if cleanup_pending { "true" } else { "false" },
+            );
             app.manage(app_state::AppState {
                 repository: Arc::new(repository),
                 data_dir,

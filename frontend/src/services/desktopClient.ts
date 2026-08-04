@@ -24,6 +24,7 @@ export const DESKTOP_COMMANDS = {
   listMeetings: "list_meetings",
   getMeetingDetail: "get_meeting_detail",
   getMeetingMarkdownPreview: "get_meeting_markdown_preview",
+  deleteMeeting: "delete_meeting",
   exportMeetingMarkdown: "export_meeting_markdown",
   listMinutesTemplates: "list_minutes_templates",
   getPublicSettings: "get_public_settings",
@@ -56,6 +57,8 @@ export interface DesktopClient {
   getMeetingDetail(meetingId: string): Promise<MeetingDetail>;
   /** 返回与导出文件一致的 Markdown 文本，仅用于本地预览。 */
   getMeetingMarkdownPreview(meetingId: string): Promise<string>;
+  /** 删除本地会议、逐字稿、纪要及关联任务，不接触用户原始文件。 */
+  deleteMeeting(meetingId: string): Promise<boolean>;
   /** 使用桌面保存对话框导出 Markdown。 */
   exportMeetingMarkdown(meetingId: string): Promise<ExportResult>;
   /** 读取绝不包含密钥值的公开设置。 */
@@ -124,6 +127,9 @@ export function createTauriDesktopClient(): DesktopClient {
     },
     async getMeetingMarkdownPreview(meetingId) {
       return invoke<string>(DESKTOP_COMMANDS.getMeetingMarkdownPreview, { meetingId });
+    },
+    async deleteMeeting(meetingId) {
+      return invoke<boolean>(DESKTOP_COMMANDS.deleteMeeting, { meetingId });
     },
     async exportMeetingMarkdown(meetingId) {
       return invoke<ExportResult>(DESKTOP_COMMANDS.exportMeetingMarkdown, { meetingId });

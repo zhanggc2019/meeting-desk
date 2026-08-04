@@ -1,4 +1,5 @@
 use crate::domain::{ProviderReadiness, PublicProviderConfig, PublicSettings};
+use sha2::{Digest, Sha256};
 
 pub const PRESET_MOCK: &str = "mock";
 pub const PRESET_DASHSCOPE_FUNASR_CN: &str = "dashscope_funasr_cn";
@@ -92,10 +93,10 @@ fn infer_preset_from_endpoint(endpoint: &str, model: &str, fallback: &str) -> St
 fn provider_defaults(prefix: &str) -> (&'static str, &'static str, &'static str, &'static str) {
     match prefix {
         "ASR" => (
-            PRESET_DASHSCOPE_FUNASR_CN,
-            "dashscope_funasr",
-            DASHSCOPE_FUNASR_CN_ENDPOINT,
-            "fun-asr",
+            PRESET_XIAOMI_MIMO_ASR,
+            "xiaomi_mimo",
+            XIAOMI_MIMO_ASR_ENDPOINT,
+            "mimo-v2.5-asr",
         ),
         "LLM" => (
             PRESET_DEEPSEEK,
@@ -110,6 +111,16 @@ fn provider_defaults(prefix: &str) -> (&'static str, &'static str, &'static str,
 /// 根据旧配置的类型和精确托管地址推断稳定预设标识，未知地址归入自定义预设。
 pub fn infer_preset_id(provider: &PublicProviderConfig) -> String {
     infer_preset_from_endpoint(&provider.endpoint, &provider.model, PRESET_CUSTOM_OPENAI)
+}
+
+/// Returns a stable credential binding; custom endpoints receive an opaque endpoint fingerprint.
+pub fn credential_binding_id(provider: &PublicProviderConfig) -> String {
+    if provider.preset_id == PRESET_CUSTOM_OPENAI {
+        let digest = hex::encode(Sha256::digest(provider.endpoint.trim().as_bytes()));
+        format!("{PRESET_CUSTOM_OPENAI}:{}", &digest[..24])
+    } else {
+        provider.preset_id.clone()
+    }
 }
 
 /// 根据公开字段和秘密存在标记计算安全的 Provider 就绪状态。
@@ -134,7 +145,7 @@ pub fn evaluate_provider_readiness(mut provider: PublicProviderConfig) -> Public
 
     let supported_kind = matches!(
         provider.kind.as_str(),
-        "dashscope_funasr" | "xiaomi_mimo" | "volcengine_asr" | "openai_compatible"
+        "xiaomi_mimo" | "volcengine_asr" | "openai_compatible"
     );
     if supported_kind && missing.is_empty() {
         provider.ready = true;
@@ -257,16 +268,16 @@ mod tests {
         assert!(evaluated.validation_message.contains("已停用"));
     }
 
-    /// 验证未配置环境覆盖时使用 FunASR 国内站和 DeepSeek 的托管默认值。
+    /// 验证未配置环境覆盖时使用已接通的 MiMo ASR 和 DeepSeek 托管默认值。
     #[test]
     fn defines_managed_environment_defaults() {
         assert_eq!(
             provider_defaults("ASR"),
             (
-                PRESET_DASHSCOPE_FUNASR_CN,
-                "dashscope_funasr",
-                DASHSCOPE_FUNASR_CN_ENDPOINT,
-                "fun-asr"
+                PRESET_XIAOMI_MIMO_ASR,
+                "xiaomi_mimo",
+                XIAOMI_MIMO_ASR_ENDPOINT,
+                "mimo-v2.5-asr"
             )
         );
         assert_eq!(
@@ -280,13 +291,13 @@ mod tests {
         );
     }
 
-    /// 验证 DashScope FunASR 类型可进入真实 Provider 就绪状态。
+    /// 验证尚未实现异步上传链路的 DashScope FunASR 不会显示为可执行。
     #[test]
-    fn accepts_dashscope_funasr_readiness() {
+    fn rejects_unimplemented_dashscope_funasr_readiness() {
         let mut value = provider(DASHSCOPE_FUNASR_CN_ENDPOINT, "fun-asr", true);
         value.kind = "dashscope_funasr".to_string();
         value.preset_id = PRESET_DASHSCOPE_FUNASR_CN.to_string();
-        assert!(evaluate_provider_readiness(value).ready);
+        assert!(!evaluate_provider_readiness(value).ready);
     }
 
     /// 验证 Xiaomi MiMo 与火山引擎转写类型可进入真实 Provider 就绪状态。
@@ -348,6 +359,15 @@ mod tests {
             ),
             PRESET_XIAOMI_MIMO_LLM
         );
+    }
+
+    #[test]
+    fn custom_credential_binding_changes_with_endpoint_without_exposing_it() {
+        let first = provider("https://first.example.test/v1", "model", true);
+        let second = provider("https://second.example.test/v1", "model", true);
+        let first_binding = credential_binding_id(&first);
+        assert_ne!(first_binding, credential_binding_id(&second));
+        assert!(!first_binding.contains("first.example"));
     }
 
     /// 验证只配置一类真实 Provider 时，另一类不会被误报为就绪。

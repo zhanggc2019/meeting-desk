@@ -1,4 +1,4 @@
-import { ArrowLeft, Check, Clipboard, Download, Eye, FileText, ListTodo } from "lucide-react";
+import { ArrowLeft, Check, Clipboard, Download, Eye, FileText, ListTodo, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -7,6 +7,7 @@ import { useDesktopClient } from "../../services/DesktopClientContext";
 import { getSafeErrorMessage } from "../../services/desktopClient";
 import { useAppStore } from "../../stores/appStore";
 import { formatDateTime, formatDuration, formatTimestamp } from "../../utils/format";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 
 type DetailTab = "minutes" | "markdown" | "transcript";
 
@@ -27,6 +28,8 @@ export function MeetingDetailPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [markdownPreview, setMarkdownPreview] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!meetingId) {
@@ -88,6 +91,26 @@ export function MeetingDetailPage() {
     }
   }
 
+  /** 删除当前本地会议及关联任务，并返回会议列表。 */
+  async function handleDelete() {
+    if (!meetingId) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      const deleted = await client.deleteMeeting(meetingId);
+      if (!deleted) {
+        setError("会议记录不存在或已被删除");
+        setDeleteOpen(false);
+        return;
+      }
+      navigate("meetings");
+    } catch (reason) {
+      setError(getSafeErrorMessage(reason));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   if (loading) {
     return <div className="page"><div className="loading-state">正在读取会议详情…</div></div>;
   }
@@ -114,10 +137,21 @@ export function MeetingDetailPage() {
           <p>{meetingMeta}</p>
         </div>
         <div className="header-actions">
+          <button className="icon-button" type="button" aria-label="删除会议" title="删除会议" onClick={() => setDeleteOpen(true)}><Trash2 size={17} aria-hidden="true" /></button>
           <button className="button secondary" type="button" disabled={!minutes.summary} onClick={() => void handleCopy(minutes.summary, "摘要")}><Clipboard size={16} aria-hidden="true" />复制摘要</button>
           <button className="button primary" type="button" onClick={() => void handleExport()}><Download size={16} aria-hidden="true" />导出 Markdown</button>
         </div>
       </header>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        title="删除会议记录？"
+        description="逐字稿、会议纪要和关联任务将从本机永久删除；用户导入的原始文件不会受影响。"
+        confirmLabel="删除会议"
+        busy={deleting}
+        onCancel={() => setDeleteOpen(false)}
+        onConfirm={() => void handleDelete()}
+      />
 
       {notice ? <div className="toast" role="status">{notice}<button type="button" aria-label="关闭提示" onClick={() => setNotice(null)}>×</button></div> : null}
       {error ? <div className="inline-alert error" role="alert"><span>{error}</span><button type="button" onClick={() => setError(null)}>关闭</button></div> : null}
