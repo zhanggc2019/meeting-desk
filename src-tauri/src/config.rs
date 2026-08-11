@@ -56,6 +56,11 @@ fn provider_from_environment(prefix: &str) -> PublicProviderConfig {
         kind,
         endpoint,
         model,
+        local_model_path: if prefix == "ASR" {
+            read_text("MEETING_DESK_ASR_MODEL_DIR", "")
+        } else {
+            String::new()
+        },
         credential_preset_id: secret_configured.then_some(preset_id.clone()),
         secret_configured,
         connect_timeout_ms: read_number(
@@ -225,6 +230,7 @@ mod tests {
             kind: "openai_compatible".to_string(),
             endpoint: endpoint.to_string(),
             model: model.to_string(),
+            local_model_path: String::new(),
             credential_preset_id: secret_configured.then_some(PRESET_CUSTOM_OPENAI.to_string()),
             secret_configured,
             connect_timeout_ms: 10_000,

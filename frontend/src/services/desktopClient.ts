@@ -28,6 +28,7 @@ export const DESKTOP_COMMANDS = {
   exportMeetingMarkdown: "export_meeting_markdown",
   listMinutesTemplates: "list_minutes_templates",
   getPublicSettings: "get_public_settings",
+  selectLocalModelDirectory: "select_local_model_directory",
   saveProviderSettings: "save_provider_settings",
   testProviderConnection: "test_provider_connection",
 } as const;
@@ -63,6 +64,8 @@ export interface DesktopClient {
   exportMeetingMarkdown(meetingId: string): Promise<ExportResult>;
   /** 读取绝不包含密钥值的公开设置。 */
   getPublicSettings(): Promise<PublicSettings>;
+  /** 选择并校验一个本机 SenseVoiceSmall 模型目录。 */
+  selectLocalModelDirectory(): Promise<string | null>;
   /** 保存配置并只返回公开配置状态。 */
   saveProviderSettings(input: SaveProviderSettingsInput): Promise<PublicSettings>;
   /** 返回不包含请求或响应正文的连接测试结果。 */
@@ -136,6 +139,9 @@ export function createTauriDesktopClient(): DesktopClient {
     },
     async getPublicSettings() {
       return invoke<PublicSettings>(DESKTOP_COMMANDS.getPublicSettings);
+    },
+    async selectLocalModelDirectory() {
+      return invoke<string | null>(DESKTOP_COMMANDS.selectLocalModelDirectory);
     },
     async saveProviderSettings(input) {
       return invoke<PublicSettings>(DESKTOP_COMMANDS.saveProviderSettings, { input });

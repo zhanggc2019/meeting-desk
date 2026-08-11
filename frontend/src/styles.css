@@ -587,6 +587,10 @@ progress { display: block; width: 95px; height: 3px; margin-top: 5px; accent-col
 .local-model-guide p { margin: 4px 0 0; font-size: 11px; line-height: 1.55; }
 .local-model-guide code { overflow-wrap: anywhere; color: var(--ink); font-family: "Cascadia Code", Consolas, monospace; }
 .local-model-guide .button { flex: 0 0 auto; min-height: 32px; padding: 0 10px; font-size: 11px; }
+.model-path-picker { display: flex; align-items: center; gap: 8px; }
+.model-path-picker input { min-width: 0; }
+.model-path-picker .button { flex: 0 0 auto; min-height: 37px; }
+.model-path-picker .icon-button { flex: 0 0 34px; width: 34px; height: 34px; }
 .copy-status { display: block; margin-top: 8px; font-size: 11px; font-weight: 650; }
 .copy-status.success { color: var(--success); }
 .copy-status.error { color: var(--danger); }
@@ -621,6 +625,8 @@ progress { display: block; width: 95px; height: 3px; margin-top: 5px; accent-col
 @media (max-width: 680px) {
   .local-model-guide-header { align-items: stretch; flex-direction: column; }
   .local-model-guide .button { align-self: flex-start; }
+  .model-path-picker { align-items: stretch; flex-wrap: wrap; }
+  .model-path-picker input { flex-basis: 100%; }
 }
 
 @keyframes page-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }

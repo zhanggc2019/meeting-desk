@@ -140,6 +140,7 @@ const initialSettings: PublicSettings = {
     kind: "local_funasr",
     endpoint: "local://model/SenseVoiceSmall",
     model: "SenseVoiceSmall",
+    localModelPath: "",
     secretConfigured: false,
     ready: true,
     readiness: "ready",
@@ -408,6 +409,9 @@ export function createMockDesktopClient(): DesktopClient {
     async getPublicSettings() {
       return structuredClone(settings);
     },
+    async selectLocalModelDirectory() {
+      return "D:\\Models\\SenseVoiceSmall";
+    },
     async saveProviderSettings(input: SaveProviderSettingsInput) {
       const transcriptionSecretConfigured = resolveMockSecretStatus(
         settings.transcription.presetId,
@@ -432,6 +436,7 @@ export function createMockDesktopClient(): DesktopClient {
           kind: input.transcription.kind,
           endpoint: input.transcription.endpoint,
           model: input.transcription.model,
+          localModelPath: input.transcription.localModelPath ?? "",
           connectTimeoutMs: input.transcription.connectTimeoutMs,
           requestTimeoutMs: input.transcription.requestTimeoutMs,
           maxRetries: input.transcription.maxRetries,
@@ -447,6 +452,7 @@ export function createMockDesktopClient(): DesktopClient {
           kind: input.minutes.kind,
           endpoint: input.minutes.endpoint,
           model: input.minutes.model,
+          localModelPath: "",
           connectTimeoutMs: input.minutes.connectTimeoutMs,
           requestTimeoutMs: input.minutes.requestTimeoutMs,
           maxRetries: input.minutes.maxRetries,

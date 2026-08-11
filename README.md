@@ -67,7 +67,7 @@
 - Rust stable，目标工具链 `x86_64-pc-windows-msvc`
 - Visual Studio 2022 C++ Build Tools
 - Microsoft Edge WebView2 Runtime
-- Python 3.12 x64
+- Python 3.12 x64（仅源码开发需要；安装包自带运行时）
 - FFmpeg（处理 MP4/MOV 等容器格式时需要）
 
 ## 快速开始
@@ -80,13 +80,9 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r .\src-tauri\python\requirements-local-asr.txt
 ```
 
-从 ModelScope 下载 `iic/SenseVoiceSmall`。请在软件目录（开发环境即仓库根目录）打开 PowerShell，运行：
+安装包内置 Python 3.12、FunASR、ModelScope、PyTorch 和 torchaudio，不依赖系统 Python 或开发 `.venv`。模型仍独立保存在本机：下载完成后，将完整的 `SenseVoiceSmall` 文件夹放到 `%LOCALAPPDATA%\com.internal.meetingdesk\model\SenseVoiceSmall`；也可以在“服务设置 → 语音转写”的“模型路径”中直接选择已有模型目录，无需复制。
 
-```powershell
-.\.venv\Scripts\python.exe -c "from modelscope import snapshot_download; snapshot_download('iic/SenseVoiceSmall', local_dir='model/SenseVoiceSmall')"
-```
-
-最终目录应为 `model\SenseVoiceSmall`，并且至少包含 `config.yaml`、`model.pt` 和 `tokens.json`。`model\` 已被 Git 忽略，不会进入源码提交或安装包。下载完成后，可在“服务设置 → 语音转写”中点击“检查环境”；该检查会实际加载一次模型，只有 Python 依赖、模型文件和模型权重均可用时才会成功。
+模型目录至少需要包含 `config.yaml`、`model.pt` 和 `tokens.json`。空路径会自动发现安装版默认目录或仓库根目录。`model\` 与生成的 `src-tauri\runtime\` 均被 Git 忽略；模型不进入安装包。完成后点击“检查环境”，该检查会实际加载一次模型。
 
 启动浏览器开发模式：
 
@@ -141,7 +137,7 @@ API Key 的处理原则：
 - Rust Provider 只接收导入模块提供的受管只读文件句柄，并在应用临时目录创建生命周期受控的推理副本。
 - Python 子进程固定使用 CPU、本地模型和离线环境变量；取消或超时会终止子进程。
 - Python stdout/stderr 不进入普通日志；转写结果通过有大小上限的临时 JSON 返回并在 Provider 完成后删除。
-- 默认自动发现 `.venv\Scripts\python.exe`、`src-tauri\python\local_funasr.py` 和 `model\SenseVoiceSmall`，可通过 `.env.example` 中的进程环境变量覆盖。
+- 安装版优先使用 `runtime\python\python.exe`，开发模式回退到 `.venv\Scripts\python.exe`；推理脚本和模型路径仍可通过 `.env.example` 中的进程环境变量覆盖。
 
 `.env.example` 仅用于说明高级环境变量，不会被应用自动加载。普通用户应优先通过应用内设置完成配置。
 
@@ -149,7 +145,7 @@ API Key 的处理原则：
 pnpm tauri:dev
 ```
 
-模型目录不会进入 Git 或安装包。开发环境按上面的 PowerShell 命令创建 `.venv`；安装版部署时应显式提供本地模型目录和 Python 运行环境。
+模型目录不会进入 Git 或安装包。开发环境按上面的 PowerShell 命令创建 `.venv`；发布构建会执行 `pnpm runtime:prepare` 生成并校验可迁移的内置 Python 运行时。
 
 ## 测试
 
@@ -157,6 +153,7 @@ pnpm tauri:dev
 pnpm typecheck
 pnpm test
 pnpm test:integration
+pnpm runtime:check
 cargo test --manifest-path src-tauri\Cargo.toml --all-targets --all-features
 cargo clippy --manifest-path src-tauri\Cargo.toml --all-targets --all-features -- -D warnings
 pnpm build

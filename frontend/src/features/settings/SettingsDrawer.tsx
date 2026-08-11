@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, ClipboardCopy, KeyRound, LoaderCircle, Save, Server, ShieldCheck, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, FolderOpen, KeyRound, LoaderCircle, RotateCcw, Save, Server, ShieldCheck, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import type {
   ProviderKind,
@@ -15,6 +15,7 @@ type ProviderTarget = "transcription" | "minutes";
 
 interface ProviderDraft extends ProviderSettingsInput {
   apiKey: string;
+  localModelPath: string;
 }
 
 interface ProviderPresetDefinition {
@@ -28,7 +29,6 @@ interface ProviderPresetDefinition {
 }
 
 const LOCAL_FUNASR_ENDPOINT = "local://model/SenseVoiceSmall";
-const LOCAL_MODEL_DOWNLOAD_COMMAND = ".\\.venv\\Scripts\\python.exe -c \"from modelscope import snapshot_download; snapshot_download('iic/SenseVoiceSmall', local_dir='model/SenseVoiceSmall')\"";
 const XIAOMI_MIMO_LLM_ENDPOINT = "https://api.xiaomimimo.com/v1/chat/completions";
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions";
 const ALIYUN_BAILIAN_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
@@ -136,6 +136,7 @@ function toDraft(settings: PublicProviderSettings, target: ProviderTarget): Prov
     kind: preset.kind,
     endpoint: isCustomPreset(presetId) ? settings.endpoint : preset.endpoint,
     model: isCustomPreset(presetId) ? settings.model : managedModel,
+    localModelPath: target === "transcription" ? settings.localModelPath ?? "" : "",
     apiKey: "",
     connectTimeoutMs: settings.connectTimeoutMs,
     requestTimeoutMs: settings.requestTimeoutMs,
@@ -160,6 +161,7 @@ function getEmptySettings(): PublicSettings {
       kind: "local_funasr",
       endpoint: LOCAL_FUNASR_ENDPOINT,
       model: "SenseVoiceSmall",
+      localModelPath: "",
     },
     minutes: {
       ...common,
@@ -167,6 +169,7 @@ function getEmptySettings(): PublicSettings {
       kind: "openai_compatible",
       endpoint: DEEPSEEK_ENDPOINT,
       model: "deepseek-v4-flash",
+      localModelPath: "",
     },
   };
 }
@@ -180,6 +183,7 @@ function applyPreset(current: ProviderDraft, target: ProviderTarget, presetId: P
     kind: preset.kind,
     endpoint: preset.endpoint,
     model: preset.defaultModel,
+    localModelPath: preset.kind === "local_funasr" ? current.localModelPath : "",
     apiKey: "",
   };
 }
@@ -368,11 +372,13 @@ interface ProviderSectionProps {
 
 /** 渲染单个 Provider 的预设配置字段，不回显已有密钥。 */
 function ProviderSection({ target, title, description, value, secretConfigured, connectionTest, onChange, onTest }: ProviderSectionProps) {
+  const client = useDesktopClient();
   const presets = getPresetDefinitions(target);
   const selectedPreset = getPresetDefinition(target, value.presetId);
   const isCustom = isCustomPreset(selectedPreset.id);
   const isLocal = selectedPreset.kind === "local_funasr";
-  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+  const [selectingModelPath, setSelectingModelPath] = useState(false);
+  const [modelPathError, setModelPathError] = useState<string | null>(null);
 
   /** 更新一个 Provider 草稿字段。 */
   function update<K extends keyof ProviderDraft>(key: K, nextValue: ProviderDraft[K]) {
@@ -384,13 +390,17 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
     onChange(applyPreset(value, target, nextPresetId));
   }
 
-  /** 将 Windows PowerShell 模型下载命令复制到系统剪贴板。 */
-  async function copyModelDownloadCommand() {
+  /** 打开桌面目录选择器，并把已校验的本地模型路径写入当前草稿。 */
+  async function selectLocalModelPath() {
+    setSelectingModelPath(true);
+    setModelPathError(null);
     try {
-      await navigator.clipboard.writeText(LOCAL_MODEL_DOWNLOAD_COMMAND);
-      setCopyStatus("copied");
-    } catch {
-      setCopyStatus("error");
+      const selectedPath = await client.selectLocalModelDirectory();
+      if (selectedPath) update("localModelPath", selectedPath);
+    } catch (reason) {
+      setModelPathError(getSafeErrorMessage(reason));
+    } finally {
+      setSelectingModelPath(false);
     }
   }
 
@@ -413,7 +423,7 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
           <div className="trusted-endpoint full-field" role="note">
             <ShieldCheck size={16} aria-hidden="true" />
             {isLocal
-              ? <span><strong>模型保留在本机</strong><small>读取 model/SenseVoiceSmall，不上传音频且无需 API Key。</small></span>
+              ? <span><strong>模型保留在本机</strong><small>读取你选择的模型目录，不上传音频且无需 API Key。</small></span>
               : <span><strong>官方地址由软件维护</strong><small>无需填写 Base URL，保存时由桌面端校验并使用受信任地址。</small></span>}
           </div>
         ) : null}
@@ -422,18 +432,37 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
           <div className="local-model-guide full-field" role="note">
             <div className="local-model-guide-header">
               <div>
-                <strong>首次使用请下载本地模型</strong>
-                <p>下载来源：ModelScope <code>iic/SenseVoiceSmall</code></p>
+                <strong>放置 SenseVoiceSmall 模型</strong>
               </div>
-              <button className="button secondary" type="button" onClick={() => void copyModelDownloadCommand()}>
-                <ClipboardCopy size={15} aria-hidden="true" />复制下载命令
-              </button>
             </div>
-            <p>在软件目录打开 PowerShell 并运行命令，模型应放在 <code>model\SenseVoiceSmall</code>。</p>
-            <p>下载完成后，目录中至少应有 <code>config.yaml</code>、<code>model.pt</code> 和 <code>tokens.json</code>。</p>
-            {copyStatus === "copied" ? <span className="copy-status success" role="status">下载命令已复制</span> : null}
-            {copyStatus === "error" ? <span className="copy-status error" role="alert">复制失败，请确认系统允许访问剪贴板</span> : null}
+            <p>下载完成后，将完整的 SenseVoiceSmall 文件夹放到 <code>%LOCALAPPDATA%\com.internal.meetingdesk\model\SenseVoiceSmall</code>。</p>
+            <p>也可以在下方直接选择已有模型目录，无需复制。目录中至少应有 <code>config.yaml</code>、<code>model.pt</code> 和 <code>tokens.json</code>。</p>
+            <p>放置或选择模型后，点击“检查环境”；检查通过后，软件默认使用该本地模型转写。</p>
           </div>
+        ) : null}
+
+        {isLocal ? (
+          <label className="field full-field">模型路径
+            <span className="model-path-picker">
+              <input
+                aria-label="语音转写模型路径"
+                value={value.localModelPath}
+                placeholder="自动查找默认模型目录"
+                readOnly
+              />
+              <button className="button secondary" type="button" onClick={() => void selectLocalModelPath()} disabled={selectingModelPath}>
+                {selectingModelPath ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : <FolderOpen size={15} aria-hidden="true" />}
+                {selectingModelPath ? "正在选择" : "选择模型目录"}
+              </button>
+              {value.localModelPath ? (
+                <button className="icon-button" type="button" aria-label="恢复自动查找模型目录" title="恢复自动查找" onClick={() => update("localModelPath", "")}>
+                  <RotateCcw size={15} aria-hidden="true" />
+                </button>
+              ) : null}
+            </span>
+            <small className="field-help">请选择直接包含 config.yaml、model.pt 和 tokens.json 的 SenseVoiceSmall 文件夹。</small>
+            {modelPathError ? <span className="copy-status error" role="alert">{modelPathError}</span> : null}
+          </label>
         ) : null}
 
         {selectedPreset.models.length > 0 ? (

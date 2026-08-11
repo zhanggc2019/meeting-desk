@@ -12,7 +12,7 @@ permissions:
 jobs:
   test-and-package:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -39,6 +39,17 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Cache bundled Python runtime
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/runtime/python
+            src-tauri/.runtime-cache
+          key: bundled-python-${{ runner.os }}-${{ hashFiles('src-tauri/python/requirements-local-asr.txt', 'scripts/prepare-python-runtime.ps1') }}
+
+      - name: Prepare bundled Python runtime
+        run: pnpm runtime:prepare
 
       - name: Frontend checks
         run: |

@@ -28,7 +28,7 @@ function hasCompleteRealProviderConfig(provider: PublicProviderSettings): boolea
 
 /** 返回不暴露敏感配置的 Provider 状态文案。 */
 function getProviderStatusCopy(provider: PublicProviderSettings): string {
-  if (hasCompleteRealProviderConfig(provider)) return provider.kind === "local_funasr" ? "本地模型已配置" : "真实服务配置已填写";
+  if (hasCompleteRealProviderConfig(provider)) return provider.kind === "local_funasr" ? "本地模式已启用，请先在设置中检查环境" : "真实服务配置已填写";
   if (provider.kind === "mock") return "旧版演示配置已停用，请重新配置";
   return provider.validationMessage?.trim() || "配置不完整，请检查地址、模型和密钥";
 }

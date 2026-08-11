@@ -12,6 +12,8 @@
     "test:coverage": "vitest run --coverage",
     "test:integration": "cargo test --manifest-path src-tauri/Cargo.toml commands::tasks::tests::mock_pipeline_persists_transcript_and_minutes",
     "test:watch": "vitest",
+    "runtime:prepare": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\prepare-python-runtime.ps1",
+    "runtime:check": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\prepare-python-runtime.ps1 -CheckOnly",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build --config src-tauri/tauri.ci.conf.json",

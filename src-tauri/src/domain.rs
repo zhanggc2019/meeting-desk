@@ -142,6 +142,8 @@ pub struct PublicProviderConfig {
     pub endpoint: String,
     pub model: String,
     #[serde(default)]
+    pub local_model_path: String,
+    #[serde(default)]
     pub credential_preset_id: Option<String>,
     pub secret_configured: bool,
     pub connect_timeout_ms: u64,
@@ -163,6 +165,7 @@ impl Default for PublicProviderConfig {
             kind: String::new(),
             endpoint: String::new(),
             model: String::new(),
+            local_model_path: String::new(),
             credential_preset_id: None,
             secret_configured: false,
             connect_timeout_ms: 10_000,

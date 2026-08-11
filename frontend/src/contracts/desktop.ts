@@ -185,6 +185,8 @@ export interface PublicProviderSettings {
   kind: ProviderKind;
   endpoint: string;
   model: string;
+  /** 本地 ASR 可选模型目录；空值表示由桌面端自动发现。 */
+  localModelPath?: string;
   secretConfigured: boolean;
   /** 后端可选提供的完整可用状态；旧版本客户端会使用公开字段派生。 */
   ready?: boolean;
@@ -207,6 +209,8 @@ export interface ProviderSettingsInput {
   kind: ProviderKind;
   endpoint: string;
   model: string;
+  /** 本地 ASR 可选模型目录；远程 Provider 会忽略该字段。 */
+  localModelPath?: string;
   apiKey?: string;
   connectTimeoutMs: number;
   requestTimeoutMs: number;

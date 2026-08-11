@@ -223,27 +223,43 @@ describe("Windows 离线媒体工作台", () => {
     expect(within(transcriptionSection).queryByLabelText("语音转写 API Key")).not.toBeInTheDocument();
   });
 
-  it("展示本地模型下载来源、放置目录并可复制 PowerShell 命令", async () => {
+  it("展示模型放置目录和本地 ASR 使用步骤", async () => {
     const user = userEvent.setup();
-    const clipboardWrite = vi.spyOn(navigator.clipboard, "writeText");
     render(<App client={createMockDesktopClient()} />);
     await user.click(screen.getByRole("button", { name: "设置" }));
 
     const transcriptionSection = await screen.findByRole("region", { name: "语音转写" });
-    expect(within(transcriptionSection).getByText(/下载来源：ModelScope/)).toBeInTheDocument();
-    expect(within(transcriptionSection).getByText("iic/SenseVoiceSmall")).toBeInTheDocument();
-    expect(within(transcriptionSection).getByText(/model\\SenseVoiceSmall/)).toBeInTheDocument();
+    expect(within(transcriptionSection).getByText(/%LOCALAPPDATA%\\com\.internal\.meetingdesk\\model\\SenseVoiceSmall/)).toBeInTheDocument();
+    expect(within(transcriptionSection).getByText(/下载完成后，将完整的 SenseVoiceSmall 文件夹放到/)).toBeInTheDocument();
+    expect(within(transcriptionSection).getByText(/检查通过后，软件默认使用该本地模型转写/)).toBeInTheDocument();
     expect(within(transcriptionSection).getByRole("button", { name: "检查环境" })).toBeInTheDocument();
+    expect(within(transcriptionSection).queryByText(/下载来源/)).not.toBeInTheDocument();
+    expect(within(transcriptionSection).queryByRole("button", { name: "复制模型下载命令" })).not.toBeInTheDocument();
+  });
 
-    await user.click(within(transcriptionSection).getByRole("button", { name: "复制下载命令" }));
-    expect(clipboardWrite).toHaveBeenCalledWith(
-      ".\\.venv\\Scripts\\python.exe -c \"from modelscope import snapshot_download; snapshot_download('iic/SenseVoiceSmall', local_dir='model/SenseVoiceSmall')\"",
-    );
-    expect(await within(transcriptionSection).findByText("下载命令已复制")).toBeInTheDocument();
+  it("选择已有 SenseVoiceSmall 目录并随本地转写设置保存", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const selectModelDirectory = vi.spyOn(client, "selectLocalModelDirectory")
+      .mockResolvedValue("D:\\Projects\\funasr-demo\\model\\SenseVoiceSmall");
+    const saveSettings = vi.spyOn(client, "saveProviderSettings");
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "设置" }));
 
-    clipboardWrite.mockRejectedValueOnce(new Error("clipboard unavailable"));
-    await user.click(within(transcriptionSection).getByRole("button", { name: "复制下载命令" }));
-    expect(await within(transcriptionSection).findByText("复制失败，请确认系统允许访问剪贴板")).toBeInTheDocument();
+    const transcriptionSection = await screen.findByRole("region", { name: "语音转写" });
+    const modelPath = within(transcriptionSection).getByLabelText("语音转写模型路径");
+    expect(modelPath).toHaveValue("");
+
+    await user.click(within(transcriptionSection).getByRole("button", { name: "选择模型目录" }));
+    expect(selectModelDirectory).toHaveBeenCalledOnce();
+    expect(modelPath).toHaveValue("D:\\Projects\\funasr-demo\\model\\SenseVoiceSmall");
+
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    expect(saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
+      transcription: expect.objectContaining({
+        localModelPath: "D:\\Projects\\funasr-demo\\model\\SenseVoiceSmall",
+      }),
+    }));
   });
 
   it("保存 MiMo 大模型托管配置", async () => {
@@ -326,7 +342,7 @@ describe("Windows 离线媒体工作台", () => {
     expect(await screen.findByRole("heading", { name: "开始前，请先完成处理配置" })).toBeInTheDocument();
     expect(screen.getByText("本地 ASR 语音模型")).toBeInTheDocument();
     expect(screen.getByText("纪要生成大模型接口")).toBeInTheDocument();
-    expect(screen.getByText("本地模型已配置")).toBeInTheDocument();
+    expect(screen.getByText("本地模式已启用，请先在设置中检查环境")).toBeInTheDocument();
     expect(screen.getAllByText("请补充：API Key")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "选择音频或视频" })).toBeDisabled();
     expect(screen.getByLabelText("选择本地媒体文件")).toBeDisabled();

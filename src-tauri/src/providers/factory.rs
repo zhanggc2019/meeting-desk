@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use crate::config;
 use crate::domain::PublicProviderConfig;
@@ -16,9 +16,13 @@ pub fn build_transcription_provider(
     provider: &PublicProviderConfig,
 ) -> Result<Arc<dyn TranscriptionProvider>, ProviderError> {
     match provider.preset_id.as_str() {
-        config::PRESET_LOCAL_FUNASR => Ok(Arc::new(LocalFunAsrProvider::discover(
-            provider.model.clone(),
-        ))),
+        config::PRESET_LOCAL_FUNASR => Ok(Arc::new(
+            LocalFunAsrProvider::discover_with_model_directory(
+                provider.model.clone(),
+                (!provider.local_model_path.trim().is_empty())
+                    .then(|| PathBuf::from(&provider.local_model_path)),
+            ),
+        )),
         _ => Err(ProviderError::configuration(
             "unsupported_transcription_provider",
             "当前语音转写预设尚未接入可执行适配器",
@@ -115,6 +119,7 @@ mod tests {
             kind: "openai_compatible".to_string(),
             endpoint: endpoint.to_string(),
             model: model.to_string(),
+            local_model_path: String::new(),
             credential_preset_id: Some(preset_id.to_string()),
             secret_configured: true,
             connect_timeout_ms: 1_000,

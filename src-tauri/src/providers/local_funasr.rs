@@ -19,6 +19,7 @@ use super::{
 
 const ADAPTER_ID: &str = "local_funasr_python";
 const ADAPTER_VERSION: &str = "1";
+const APP_DATA_DIRECTORY: &str = "com.internal.meetingdesk";
 const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.yaml", "model.pt", "tokens.json"];
 
@@ -82,21 +83,31 @@ struct LocalInferenceSegment {
 impl LocalFunAsrProvider {
     /// Discovers the repository-local model, Python runtime, and bundled inference script.
     pub fn discover(model_name: impl Into<String>) -> Self {
+        Self::discover_with_model_directory(model_name, None)
+    }
+
+    /// Discovers local runtime resources while honoring a user-selected model directory.
+    pub fn discover_with_model_directory(
+        model_name: impl Into<String>,
+        configured_model_dir: Option<PathBuf>,
+    ) -> Self {
         let model_name = model_name.into();
         let roots = discovery_roots();
-        let model_dir = environment_path("MEETING_DESK_ASR_MODEL_DIR").unwrap_or_else(|| {
-            first_existing(
-                roots
-                    .iter()
-                    .flat_map(|root| {
-                        [
-                            root.join("model").join(&model_name),
-                            root.join("resources").join("model").join(&model_name),
-                        ]
-                    })
-                    .collect(),
-            )
-        });
+        let model_dir = environment_path("MEETING_DESK_ASR_MODEL_DIR")
+            .or(configured_model_dir)
+            .unwrap_or_else(|| {
+                first_existing(
+                    roots
+                        .iter()
+                        .flat_map(|root| {
+                            [
+                                root.join("model").join(&model_name),
+                                root.join("resources").join("model").join(&model_name),
+                            ]
+                        })
+                        .collect(),
+                )
+            });
         let script_path = environment_path("MEETING_DESK_FUNASR_SCRIPT").unwrap_or_else(|| {
             first_existing(
                 roots
@@ -118,10 +129,17 @@ impl LocalFunAsrProvider {
         let python_executable = std::env::var_os("MEETING_DESK_FUNASR_PYTHON")
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| {
-                let candidates = roots
-                    .iter()
-                    .map(|root| root.join(".venv").join("Scripts").join("python.exe"))
+                let mut runtime_roots = model_dir
+                    .ancestors()
+                    .take(5)
+                    .map(Path::to_path_buf)
                     .collect::<Vec<_>>();
+                for root in &roots {
+                    if !runtime_roots.contains(root) {
+                        runtime_roots.push(root.clone());
+                    }
+                }
+                let candidates = python_runtime_candidates(&runtime_roots);
                 let discovered = first_existing(candidates);
                 if discovered.exists() {
                     discovered.into_os_string()
@@ -130,6 +148,30 @@ impl LocalFunAsrProvider {
                 }
             });
         Self::from_paths(python_executable, script_path, model_dir, model_name)
+    }
+
+    /// Validates a SenseVoiceSmall directory without exposing its absolute path in errors.
+    pub(crate) fn validate_model_directory(model_dir: &Path) -> Result<(), ProviderError> {
+        if !model_dir.is_dir() {
+            return Err(local_configuration_error(
+                "local_funasr_model_missing",
+                "所选目录不是有效的 SenseVoiceSmall 模型目录",
+            ));
+        }
+        for file_name in REQUIRED_MODEL_FILES {
+            let valid = model_dir
+                .join(file_name)
+                .metadata()
+                .map(|metadata| metadata.is_file() && metadata.len() > 0)
+                .unwrap_or(false);
+            if !valid {
+                return Err(local_configuration_error(
+                    "local_funasr_model_incomplete",
+                    "模型目录不完整，需要包含 config.yaml、model.pt 和 tokens.json",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Creates an adapter with explicit paths for tests and controlled deployments.
@@ -158,13 +200,8 @@ impl LocalFunAsrProvider {
             OsString::from("--model-dir"),
             self.config.model_dir.as_os_str().to_owned(),
         ];
-        self.run_process(
-            &args,
-            &token,
-            timeout,
-            "local_runtime_check_failed",
-        )
-        .await
+        self.run_process(&args, &token, timeout, "local_runtime_check_failed")
+            .await
     }
 
     /// Validates local files using stable messages that do not reveal absolute paths.
@@ -175,28 +212,7 @@ impl LocalFunAsrProvider {
                 "本地 FunASR 推理脚本缺失，请重新安装应用",
             ));
         }
-        if !self.config.model_dir.is_dir() {
-            return Err(local_configuration_error(
-                "local_funasr_model_missing",
-                "未找到本地模型，请确认 model/SenseVoiceSmall 文件夹存在",
-            ));
-        }
-        for file_name in REQUIRED_MODEL_FILES {
-            let valid = self
-                .config
-                .model_dir
-                .join(file_name)
-                .metadata()
-                .map(|metadata| metadata.is_file() && metadata.len() > 0)
-                .unwrap_or(false);
-            if !valid {
-                return Err(local_configuration_error(
-                    "local_funasr_model_incomplete",
-                    "本地 SenseVoiceSmall 模型文件不完整",
-                ));
-            }
-        }
-        Ok(())
+        Self::validate_model_directory(&self.config.model_dir)
     }
 
     /// Copies an ingest-managed file into an isolated temporary directory with cancellation.
@@ -266,7 +282,7 @@ impl LocalFunAsrProvider {
             .map_err(|_| {
                 local_configuration_error(
                     "local_funasr_python_missing",
-                    "未找到本地 FunASR Python 环境，请先运行安装命令",
+                    "内置 FunASR 运行环境缺失，请重新安装应用",
                 )
             })?;
         let status = tokio::select! {
@@ -288,7 +304,7 @@ impl LocalFunAsrProvider {
         Err(match status.code() {
             Some(20) => local_configuration_error(
                 "local_funasr_dependency_missing",
-                "本地 Python 环境缺少 FunASR 依赖，请先运行安装命令",
+                "内置 Python 环境缺少 FunASR 依赖，请重新安装应用",
             ),
             Some(21) => local_configuration_error(
                 "local_funasr_model_load_failed",
@@ -439,17 +455,44 @@ impl TranscriptionProvider for LocalFunAsrProvider {
 
 /// Returns candidate roots for development, installed resources, and explicit overrides.
 fn discovery_roots() -> Vec<PathBuf> {
+    let current_dir = std::env::current_dir().ok();
+    let current_executable = std::env::current_exe().ok();
+    let local_app_data = environment_path("LOCALAPPDATA");
+    discovery_roots_from(
+        current_dir.as_deref(),
+        current_executable.as_deref(),
+        local_app_data.as_deref(),
+    )
+}
+
+/// Builds stable discovery roots with installed app data ahead of development locations.
+fn discovery_roots_from(
+    current_dir: Option<&Path>,
+    current_executable: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    if let Ok(current) = std::env::current_dir() {
-        roots.extend(current.ancestors().take(5).map(Path::to_path_buf));
+    if let Some(local_app_data) = local_app_data {
+        roots.push(local_app_data.join(APP_DATA_DIRECTORY));
     }
-    if let Ok(executable) = std::env::current_exe() {
-        if let Some(parent) = executable.parent() {
-            roots.extend(parent.ancestors().take(5).map(Path::to_path_buf));
+    if let Some(current) = current_dir {
+        for root in current.ancestors().take(5) {
+            let root = root.to_path_buf();
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
         }
     }
-    roots.sort();
-    roots.dedup();
+    if let Some(executable) = current_executable {
+        if let Some(parent) = executable.parent() {
+            for root in parent.ancestors().take(5) {
+                let root = root.to_path_buf();
+                if !roots.contains(&root) {
+                    roots.push(root);
+                }
+            }
+        }
+    }
     roots
 }
 
@@ -468,6 +511,19 @@ fn first_existing(candidates: Vec<PathBuf>) -> PathBuf {
         .cloned()
         .or_else(|| candidates.into_iter().next())
         .unwrap_or_default()
+}
+
+/// Builds runtime candidates with bundled Python ahead of development virtual environments.
+fn python_runtime_candidates(roots: &[PathBuf]) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .map(|root| root.join("runtime").join("python").join("python.exe"))
+        .chain(
+            roots
+                .iter()
+                .map(|root| root.join(".venv").join("Scripts").join("python.exe")),
+        )
+        .collect()
 }
 
 /// Maps a validated ingest MIME type to a safe temporary filename suffix.
@@ -575,6 +631,56 @@ mod tests {
         assert!(!debug.contains("private-model"));
     }
 
+    /// Verifies installed builds prefer the writable application data root.
+    #[test]
+    fn discovery_roots_prioritize_local_app_data() {
+        let local_app_data = Path::new(r"C:\Users\tester\AppData\Local");
+        let roots = discovery_roots_from(
+            Some(Path::new(r"D:\work\funasr-demo")),
+            Some(Path::new(r"D:\Program Files\MeetingDesk\meeting-desk.exe")),
+            Some(local_app_data),
+        );
+
+        assert_eq!(
+            roots.first(),
+            Some(&local_app_data.join("com.internal.meetingdesk")),
+        );
+    }
+
+    /// Verifies a project virtual environment remains the fallback when no bundle exists.
+    #[test]
+    fn nearby_virtualenv_is_used_when_bundled_runtime_is_missing() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let python = fixture
+            .path()
+            .join(".venv")
+            .join("Scripts")
+            .join("python.exe");
+        std::fs::create_dir_all(python.parent().expect("python parent")).expect("venv");
+        std::fs::write(&python, b"fixture").expect("python executable");
+
+        let candidates = python_runtime_candidates(&[fixture.path().to_path_buf()]);
+
+        assert_eq!(candidates.get(1), Some(&python));
+        assert_eq!(first_existing(candidates), python);
+    }
+
+    /// Verifies installed builds prefer the bundled Python runtime over development venvs.
+    #[test]
+    fn bundled_python_is_first_runtime_candidate() {
+        let root = PathBuf::from(r"D:\Program Files\MeetingDesk");
+        let candidates = python_runtime_candidates(std::slice::from_ref(&root));
+
+        assert_eq!(
+            candidates.first(),
+            Some(&root.join("runtime").join("python").join("python.exe")),
+        );
+        assert_eq!(
+            candidates.get(1),
+            Some(&root.join(".venv").join("Scripts").join("python.exe")),
+        );
+    }
+
     /// Verifies the runtime check passes the validated model directory to Python for loading.
     #[tokio::test]
     async fn runtime_check_passes_model_directory() {
@@ -667,6 +773,7 @@ if not a.check:
             .await
             .expect_err("missing model must fail");
         assert_eq!(error.code, "local_funasr_model_missing");
+        assert!(error.safe_message.contains("模型目录"));
         assert!(!error
             .safe_message
             .contains(fixture.path().to_string_lossy().as_ref()));

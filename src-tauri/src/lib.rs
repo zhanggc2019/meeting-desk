@@ -55,6 +55,7 @@ pub fn run() {
             commands::meetings::export_meeting_markdown,
             commands::meetings::list_minutes_templates,
             commands::settings::get_public_settings,
+            commands::settings::select_local_model_directory,
             commands::settings::save_provider_settings,
             commands::settings::delete_provider_secret,
             commands::settings::test_provider_connection,

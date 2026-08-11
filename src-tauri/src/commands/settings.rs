@@ -1,8 +1,9 @@
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use reqwest::{redirect::Policy, StatusCode};
 use serde::Deserialize;
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::app_state::AppState;
 use crate::commands::CommandError;
@@ -22,6 +23,8 @@ pub struct ProviderSettingsInput {
     pub kind: String,
     pub endpoint: String,
     pub model: String,
+    #[serde(default)]
+    pub local_model_path: Option<String>,
     pub api_key: Option<String>,
     pub connect_timeout_ms: u64,
     pub request_timeout_ms: u64,
@@ -55,6 +58,20 @@ enum ProviderTarget {
 #[tauri::command]
 pub fn get_public_settings(state: State<'_, AppState>) -> Result<PublicSettings, CommandError> {
     load_evaluated_settings(state.inner())
+}
+
+/// 打开系统目录选择器，并只返回通过文件完整性校验的本地模型路径。
+#[tauri::command]
+pub fn select_local_model_directory(app: AppHandle) -> Result<Option<String>, CommandError> {
+    let Some(selected) = app.dialog().file().blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let path = selected.into_path().map_err(|_| {
+        CommandError::new("local_model_path_invalid", "无法读取所选模型目录", false)
+    })?;
+    Ok(Some(validate_local_model_path(Some(
+        path.to_string_lossy().as_ref(),
+    ))?))
 }
 
 /// 供后端命令复用的公开设置读取入口，会迁移旧配置并重新计算密钥就绪状态。
@@ -151,7 +168,11 @@ pub async fn test_provider_connection(
         }
     };
     if provider.preset_id == config::PRESET_LOCAL_FUNASR {
-        let local = LocalFunAsrProvider::discover(provider.model.clone());
+        let local = LocalFunAsrProvider::discover_with_model_directory(
+            provider.model.clone(),
+            (!provider.local_model_path.trim().is_empty())
+                .then(|| provider.local_model_path.clone().into()),
+        );
         return Ok(match local.check_runtime(Duration::from_secs(30)).await {
             Ok(()) => ProviderConnectionResult {
                 ok: true,
@@ -406,11 +427,17 @@ fn resolve_provider(
         }
         _ => unreachable!("预设已在目标校验中穷举"),
     };
+    let local_model_path = if preset_id == config::PRESET_LOCAL_FUNASR {
+        validate_local_model_path(input.local_model_path.as_deref())?
+    } else {
+        String::new()
+    };
     let mut provider = PublicProviderConfig {
         preset_id,
         kind,
         endpoint,
         model,
+        local_model_path,
         credential_preset_id: None,
         secret_configured: false,
         connect_timeout_ms: input.connect_timeout_ms,
@@ -516,6 +543,7 @@ fn effective_preset_id(input: &ProviderSettingsInput) -> String {
         kind: input.kind.clone(),
         endpoint: input.endpoint.clone(),
         model: input.model.clone(),
+        local_model_path: input.local_model_path.clone().unwrap_or_default(),
         credential_preset_id: None,
         secret_configured: false,
         connect_timeout_ms: input.connect_timeout_ms,
@@ -525,6 +553,25 @@ fn effective_preset_id(input: &ProviderSettingsInput) -> String {
         readiness: crate::domain::ProviderReadiness::Incomplete,
         validation_message: String::new(),
     })
+}
+
+/// 校验用户选择的是本机绝对目录，且模型关键文件均存在并非空文件。
+fn validate_local_model_path(value: Option<&str>) -> Result<String, CommandError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(String::new());
+    };
+    let path = Path::new(value);
+    if !path.is_absolute() || value.starts_with(r"\\") || value.starts_with("//") {
+        return Err(CommandError::new(
+            "local_model_path_invalid",
+            "请选择本机磁盘上的 SenseVoiceSmall 模型目录",
+            false,
+        ));
+    }
+    LocalFunAsrProvider::validate_model_directory(path).map_err(|error| {
+        CommandError::new("local_model_path_invalid", error.safe_message, false)
+    })?;
+    Ok(value.to_string())
 }
 
 /// 校验预设是否存在且允许用于当前目标服务。
@@ -667,6 +714,7 @@ mod tests {
             kind: "openai_compatible".into(),
             endpoint: "https://api.example.test/v1".into(),
             model: "test-model".into(),
+            local_model_path: None,
             api_key: None,
             connect_timeout_ms: 10_000,
             request_timeout_ms: 60_000,
@@ -713,6 +761,7 @@ mod tests {
                 kind: "openai_compatible".to_string(),
                 endpoint: "https://api.example.test/v1".to_string(),
                 model: "test-model".to_string(),
+                local_model_path: String::new(),
                 credential_preset_id: None,
                 secret_configured: false,
                 connect_timeout_ms: 10_000,
@@ -783,6 +832,31 @@ mod tests {
         assert!(public.credential_preset_id.is_none());
         assert!(!public.secret_configured);
         assert!(public.ready);
+    }
+
+    /// 验证本地 FunASR 会校验并保存用户选择的模型目录。
+    #[test]
+    fn local_funasr_persists_selected_model_directory() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let model_dir = fixture.path().join("SenseVoiceSmall");
+        std::fs::create_dir_all(&model_dir).expect("model directory");
+        for file_name in ["config.yaml", "model.pt", "tokens.json"] {
+            std::fs::write(model_dir.join(file_name), b"fixture").expect("model file");
+        }
+        let mut input = valid_input();
+        input.preset_id = config::PRESET_LOCAL_FUNASR.to_string();
+        input.kind = "local_funasr".to_string();
+        input.model = config::LOCAL_FUNASR_MODEL.to_string();
+        input.local_model_path = Some(model_dir.to_string_lossy().into_owned());
+        input.request_timeout_ms = config::LOCAL_FUNASR_DEFAULT_TIMEOUT_MS;
+
+        let public = resolve_provider(&input, ProviderTarget::Transcription, None, false)
+            .expect("selected model directory");
+
+        assert_eq!(
+            public.local_model_path,
+            model_dir.to_string_lossy().as_ref()
+        );
     }
 
     /// 验证已停用的 Xiaomi MiMo 在线 ASR 预设不能保存。
@@ -930,6 +1004,7 @@ mod tests {
             kind: "openai_compatible".to_string(),
             endpoint: config::DEEPSEEK_ENDPOINT.to_string(),
             model: "deepseek-v4-flash".to_string(),
+            local_model_path: String::new(),
             credential_preset_id: None,
             secret_configured: true,
             connect_timeout_ms: 10_000,
@@ -955,6 +1030,7 @@ mod tests {
             kind: "openai_compatible".to_string(),
             endpoint: "https://asr.example.test/v1".to_string(),
             model: "custom-asr".to_string(),
+            local_model_path: String::new(),
             credential_preset_id: None,
             secret_configured: true,
             connect_timeout_ms: 10_000,
