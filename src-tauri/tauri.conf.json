@@ -28,6 +28,10 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": [
+      "python/local_funasr.py",
+      "python/requirements-local-asr.txt"
+    ],
     "createUpdaterArtifacts": true,
     "shortDescription": "离线音视频转写与 AI 会议纪要工具",
     "icon": [

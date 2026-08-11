@@ -136,17 +136,17 @@ const initialTasks: ProcessingTask[] = [
 
 const initialSettings: PublicSettings = {
   transcription: {
-    presetId: "xiaomi_mimo_asr",
-    kind: "xiaomi_mimo",
-    endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
-    model: "mimo-v2.5-asr",
+    presetId: "local_funasr",
+    kind: "local_funasr",
+    endpoint: "local://model/SenseVoiceSmall",
+    model: "SenseVoiceSmall",
     secretConfigured: false,
-    ready: false,
-    readiness: "incomplete",
-    validationMessage: "请补充：API Key",
+    ready: true,
+    readiness: "ready",
+    validationMessage: "本地 SenseVoiceSmall 配置已就绪",
     connectTimeoutMs: 10_000,
-    requestTimeoutMs: 120_000,
-    maxRetries: 2,
+    requestTimeoutMs: 3_600_000,
+    maxRetries: 0,
   },
   minutes: {
     presetId: "deepseek",
@@ -235,13 +235,13 @@ function resolveMockSecretStatus(
   return Boolean(nextSecret?.trim()) || (sameBinding && currentConfigured);
 }
 
-/** 判断浏览器测试客户端中的两个真实 Provider 是否均已完成必要配置。 */
+/** 判断浏览器测试客户端中的本地转写和在线纪要是否均已完成必要配置。 */
 function areProvidersReady(settings: PublicSettings): boolean {
   return [settings.transcription, settings.minutes].every((provider) => (
     provider.kind !== "mock"
     && provider.endpoint.trim().length > 0
     && provider.model.trim().length > 0
-    && provider.secretConfigured
+    && (provider.kind === "local_funasr" || provider.secretConfigured)
   ));
 }
 
@@ -425,6 +425,7 @@ export function createMockDesktopClient(): DesktopClient {
         settings.minutes.secretConfigured,
         input.minutes.apiKey,
       );
+      const localTranscription = input.transcription.kind === "local_funasr";
       settings = {
         transcription: {
           presetId: input.transcription.presetId,
@@ -435,9 +436,11 @@ export function createMockDesktopClient(): DesktopClient {
           requestTimeoutMs: input.transcription.requestTimeoutMs,
           maxRetries: input.transcription.maxRetries,
           secretConfigured: transcriptionSecretConfigured,
-          ready: transcriptionSecretConfigured,
-          readiness: transcriptionSecretConfigured ? "ready" : "incomplete",
-          validationMessage: transcriptionSecretConfigured ? "真实 Provider 配置已就绪" : "请补充：API Key",
+          ready: localTranscription || transcriptionSecretConfigured,
+          readiness: localTranscription || transcriptionSecretConfigured ? "ready" : "incomplete",
+          validationMessage: localTranscription
+            ? "本地 SenseVoiceSmall 配置已就绪"
+            : (transcriptionSecretConfigured ? "真实 Provider 配置已就绪" : "请补充：API Key"),
         },
         minutes: {
           presetId: input.minutes.presetId,
@@ -457,6 +460,9 @@ export function createMockDesktopClient(): DesktopClient {
     },
     async testProviderConnection(target) {
       const provider = settings[target];
+      if (provider.kind === "local_funasr") {
+        return { ok: false, safeMessage: "浏览器测试环境无法检查本地模型，请在 Windows 桌面应用中检查环境" };
+      }
       if (!provider.secretConfigured) {
         return { ok: false, safeMessage: "请先保存 API Key" };
       }

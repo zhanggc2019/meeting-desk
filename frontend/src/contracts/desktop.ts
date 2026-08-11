@@ -161,6 +161,7 @@ export interface MeetingDetail {
 
 export type ProviderKind =
   | "mock"
+  | "local_funasr"
   | "dashscope_funasr"
   | "xiaomi_mimo"
   | "volcengine_asr"
@@ -168,6 +169,7 @@ export type ProviderKind =
 export type ProviderReadiness = "incomplete" | "mockExperience" | "ready";
 export type ProviderPresetId =
   | "mock"
+  | "local_funasr"
   | "dashscope_funasr_cn"
   | "dashscope_funasr_intl"
   | "xiaomi_mimo_asr"

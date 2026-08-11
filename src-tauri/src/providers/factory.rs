@@ -4,12 +4,11 @@ use crate::config;
 use crate::domain::PublicProviderConfig;
 
 use super::{
-    openai_chat_completions_minutes_mapping, MinutesProvider, OpenAiCompatibleMinutesProvider,
-    ProviderCredentialPlacement, ProviderError, ProviderHttpConfig, ReplaySafety, RetryPolicy,
-    TranscriptionProvider, VolcengineFlashTranscriptionProvider, XiaomiMimoTranscriptionProvider,
+    openai_chat_completions_minutes_mapping, LocalFunAsrProvider, MinutesProvider,
+    OpenAiCompatibleMinutesProvider, ProviderCredentialPlacement, ProviderError,
+    ProviderHttpConfig, ReplaySafety, RetryPolicy, TranscriptionProvider,
 };
 
-const MAX_TRANSCRIPT_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_MINUTES_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Builds a production transcription adapter from a backend-canonicalized preset.
@@ -17,31 +16,9 @@ pub fn build_transcription_provider(
     provider: &PublicProviderConfig,
 ) -> Result<Arc<dyn TranscriptionProvider>, ProviderError> {
     match provider.preset_id.as_str() {
-        config::PRESET_XIAOMI_MIMO_ASR => {
-            require_endpoint(provider, config::XIAOMI_MIMO_ASR_ENDPOINT)?;
-            Ok(Arc::new(XiaomiMimoTranscriptionProvider::with_reqwest(
-                http_config(
-                    provider,
-                    "xiaomi_mimo_asr",
-                    ProviderCredentialPlacement::Bearer,
-                    MAX_TRANSCRIPT_RESPONSE_BYTES,
-                ),
-            )?))
-        }
-        config::PRESET_VOLCENGINE_ASR_FLASH => {
-            require_endpoint(provider, config::VOLCENGINE_ASR_FLASH_ENDPOINT)?;
-            Ok(Arc::new(
-                VolcengineFlashTranscriptionProvider::with_reqwest(http_config(
-                    provider,
-                    "volcengine_asr_flash",
-                    ProviderCredentialPlacement::Header {
-                        header_name: "X-Api-Key".to_string(),
-                        prefix: None,
-                    },
-                    MAX_TRANSCRIPT_RESPONSE_BYTES,
-                ))?,
-            ))
-        }
+        config::PRESET_LOCAL_FUNASR => Ok(Arc::new(LocalFunAsrProvider::discover(
+            provider.model.clone(),
+        ))),
         _ => Err(ProviderError::configuration(
             "unsupported_transcription_provider",
             "当前语音转写预设尚未接入可执行适配器",
@@ -151,22 +128,22 @@ mod tests {
 
     #[test]
     fn builds_only_executable_transcription_presets() {
-        let mimo = provider(
-            config::PRESET_XIAOMI_MIMO_ASR,
-            config::XIAOMI_MIMO_ASR_ENDPOINT,
-            "mimo-v2.5-asr",
+        let local = provider(
+            config::PRESET_LOCAL_FUNASR,
+            config::LOCAL_FUNASR_ENDPOINT,
+            config::LOCAL_FUNASR_MODEL,
         );
-        assert!(build_transcription_provider(&mimo).is_ok());
+        assert!(build_transcription_provider(&local).is_ok());
 
-        let dashscope = provider(
+        let online = provider(
             config::PRESET_DASHSCOPE_FUNASR_CN,
             config::DASHSCOPE_FUNASR_CN_ENDPOINT,
             "fun-asr",
         );
         assert_eq!(
-            build_transcription_provider(&dashscope)
+            build_transcription_provider(&online)
                 .err()
-                .expect("unsupported adapter")
+                .expect("online ASR must be disabled")
                 .code,
             "unsupported_transcription_provider"
         );

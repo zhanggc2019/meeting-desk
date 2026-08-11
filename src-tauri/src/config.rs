@@ -2,6 +2,7 @@ use crate::domain::{ProviderReadiness, PublicProviderConfig, PublicSettings};
 use sha2::{Digest, Sha256};
 
 pub const PRESET_MOCK: &str = "mock";
+pub const PRESET_LOCAL_FUNASR: &str = "local_funasr";
 pub const PRESET_DASHSCOPE_FUNASR_CN: &str = "dashscope_funasr_cn";
 pub const PRESET_DASHSCOPE_FUNASR_INTL: &str = "dashscope_funasr_intl";
 pub const PRESET_XIAOMI_MIMO_ASR: &str = "xiaomi_mimo_asr";
@@ -22,6 +23,10 @@ pub const VOLCENGINE_ASR_FLASH_ENDPOINT: &str =
 pub const DEEPSEEK_ENDPOINT: &str = "https://api.deepseek.com/chat/completions";
 pub const ALIYUN_BAILIAN_ENDPOINT: &str =
     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+pub const LOCAL_FUNASR_ENDPOINT: &str = "local://model/SenseVoiceSmall";
+pub const LOCAL_FUNASR_MODEL: &str = "SenseVoiceSmall";
+pub const LOCAL_FUNASR_DEFAULT_TIMEOUT_MS: u64 = 3_600_000;
+pub const LOCAL_FUNASR_MAX_TIMEOUT_MS: u64 = 14_400_000;
 
 /// 从进程环境读取非秘密 Provider 默认配置。
 pub fn provider_settings_from_environment() -> PublicSettings {
@@ -51,7 +56,7 @@ fn provider_from_environment(prefix: &str) -> PublicProviderConfig {
         kind,
         endpoint,
         model,
-        credential_preset_id: secret_configured.then_some(preset_id),
+        credential_preset_id: secret_configured.then_some(preset_id.clone()),
         secret_configured,
         connect_timeout_ms: read_number(
             "MEETING_DESK_CONNECT_TIMEOUT_MS",
@@ -61,9 +66,17 @@ fn provider_from_environment(prefix: &str) -> PublicProviderConfig {
         ),
         request_timeout_ms: read_number(
             "MEETING_DESK_REQUEST_TIMEOUT_MS",
-            defaults.request_timeout_ms,
+            if prefix == "ASR" && preset_id == PRESET_LOCAL_FUNASR {
+                LOCAL_FUNASR_DEFAULT_TIMEOUT_MS
+            } else {
+                defaults.request_timeout_ms
+            },
             5_000,
-            600_000,
+            if prefix == "ASR" && preset_id == PRESET_LOCAL_FUNASR {
+                LOCAL_FUNASR_MAX_TIMEOUT_MS
+            } else {
+                600_000
+            },
         ),
         max_retries: read_number("MEETING_DESK_MAX_RETRIES", defaults.max_retries, 0, 5),
         ready: false,
@@ -75,6 +88,7 @@ fn provider_from_environment(prefix: &str) -> PublicProviderConfig {
 /// 根据可信环境地址推断预设；自定义地址会自动进入可编辑的 OpenAI-compatible 预设。
 fn infer_preset_from_endpoint(endpoint: &str, model: &str, fallback: &str) -> String {
     match endpoint.trim() {
+        LOCAL_FUNASR_ENDPOINT => PRESET_LOCAL_FUNASR.to_string(),
         DASHSCOPE_FUNASR_CN_ENDPOINT => PRESET_DASHSCOPE_FUNASR_CN.to_string(),
         DASHSCOPE_FUNASR_INTL_ENDPOINT => PRESET_DASHSCOPE_FUNASR_INTL.to_string(),
         XIAOMI_MIMO_ASR_ENDPOINT if model.trim() == "mimo-v2.5-asr" => {
@@ -93,10 +107,10 @@ fn infer_preset_from_endpoint(endpoint: &str, model: &str, fallback: &str) -> St
 fn provider_defaults(prefix: &str) -> (&'static str, &'static str, &'static str, &'static str) {
     match prefix {
         "ASR" => (
-            PRESET_XIAOMI_MIMO_ASR,
-            "xiaomi_mimo",
-            XIAOMI_MIMO_ASR_ENDPOINT,
-            "mimo-v2.5-asr",
+            PRESET_LOCAL_FUNASR,
+            "local_funasr",
+            LOCAL_FUNASR_ENDPOINT,
+            LOCAL_FUNASR_MODEL,
         ),
         "LLM" => (
             PRESET_DEEPSEEK,
@@ -132,6 +146,8 @@ pub fn evaluate_provider_readiness(mut provider: PublicProviderConfig) -> Public
         return provider;
     }
 
+    let is_local_funasr =
+        provider.preset_id == PRESET_LOCAL_FUNASR && provider.kind == "local_funasr";
     let mut missing = Vec::new();
     if provider.endpoint.trim().is_empty() {
         missing.push("API 地址");
@@ -139,18 +155,19 @@ pub fn evaluate_provider_readiness(mut provider: PublicProviderConfig) -> Public
     if provider.model.trim().is_empty() {
         missing.push("模型名");
     }
-    if !provider.secret_configured {
+    if !is_local_funasr && !provider.secret_configured {
         missing.push("API Key");
     }
 
-    let supported_kind = matches!(
-        provider.kind.as_str(),
-        "xiaomi_mimo" | "volcengine_asr" | "openai_compatible"
-    );
+    let supported_kind = matches!(provider.kind.as_str(), "local_funasr" | "openai_compatible");
     if supported_kind && missing.is_empty() {
         provider.ready = true;
         provider.readiness = ProviderReadiness::Ready;
-        provider.validation_message = "真实 Provider 配置已就绪".to_string();
+        provider.validation_message = if is_local_funasr {
+            "本地 SenseVoiceSmall 配置已就绪".to_string()
+        } else {
+            "真实 Provider 配置已就绪".to_string()
+        };
     } else {
         provider.ready = false;
         provider.readiness = ProviderReadiness::Incomplete;
@@ -268,16 +285,16 @@ mod tests {
         assert!(evaluated.validation_message.contains("已停用"));
     }
 
-    /// 验证未配置环境覆盖时使用已接通的 MiMo ASR 和 DeepSeek 托管默认值。
+    /// 验证未配置环境覆盖时使用本地 SenseVoiceSmall 和 DeepSeek 默认值。
     #[test]
     fn defines_managed_environment_defaults() {
         assert_eq!(
             provider_defaults("ASR"),
             (
-                PRESET_XIAOMI_MIMO_ASR,
-                "xiaomi_mimo",
-                XIAOMI_MIMO_ASR_ENDPOINT,
-                "mimo-v2.5-asr"
+                PRESET_LOCAL_FUNASR,
+                "local_funasr",
+                LOCAL_FUNASR_ENDPOINT,
+                LOCAL_FUNASR_MODEL
             )
         );
         assert_eq!(
@@ -291,27 +308,27 @@ mod tests {
         );
     }
 
-    /// 验证尚未实现异步上传链路的 DashScope FunASR 不会显示为可执行。
+    /// 验证本地 FunASR 不需要 API Key 即可通过就绪检查。
     #[test]
-    fn rejects_unimplemented_dashscope_funasr_readiness() {
-        let mut value = provider(DASHSCOPE_FUNASR_CN_ENDPOINT, "fun-asr", true);
-        value.kind = "dashscope_funasr".to_string();
-        value.preset_id = PRESET_DASHSCOPE_FUNASR_CN.to_string();
-        assert!(!evaluate_provider_readiness(value).ready);
+    fn accepts_local_funasr_without_api_key() {
+        let mut value = provider(LOCAL_FUNASR_ENDPOINT, LOCAL_FUNASR_MODEL, false);
+        value.kind = "local_funasr".to_string();
+        value.preset_id = PRESET_LOCAL_FUNASR.to_string();
+        assert!(evaluate_provider_readiness(value).ready);
     }
 
-    /// 验证 Xiaomi MiMo 与火山引擎转写类型可进入真实 Provider 就绪状态。
+    /// 验证已停用的在线 ASR 类型不会进入就绪状态。
     #[test]
-    fn accepts_new_managed_asr_provider_readiness() {
+    fn rejects_disabled_online_asr_provider_readiness() {
         let mut mimo = provider(XIAOMI_MIMO_ASR_ENDPOINT, "mimo-v2.5-asr", true);
         mimo.kind = "xiaomi_mimo".to_string();
         mimo.preset_id = PRESET_XIAOMI_MIMO_ASR.to_string();
-        assert!(evaluate_provider_readiness(mimo).ready);
+        assert!(!evaluate_provider_readiness(mimo).ready);
 
         let mut volc = provider(VOLCENGINE_ASR_FLASH_ENDPOINT, "bigmodel", true);
         volc.kind = "volcengine_asr".to_string();
         volc.preset_id = PRESET_VOLCENGINE_ASR_FLASH.to_string();
-        assert!(evaluate_provider_readiness(volc).ready);
+        assert!(!evaluate_provider_readiness(volc).ready);
     }
 
     /// 验证百炼集中式 Chat Completions 地址能被精确识别为托管预设。

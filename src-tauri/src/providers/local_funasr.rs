@@ -1,0 +1,710 @@
+use std::ffi::OsString;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use chrono::Utc;
+use serde::Deserialize;
+use tempfile::TempDir;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
+
+use super::{
+    CapabilityEvidence, OperationOutcome, ProviderCallContext, ProviderCredential, ProviderError,
+    ProviderErrorCategory, ProviderMetadata, ReplaySafety, Transcript, TranscriptSegment,
+    TranscriptionCapabilities, TranscriptionProvider, TranscriptionRequest,
+};
+
+const ADAPTER_ID: &str = "local_funasr_python";
+const ADAPTER_VERSION: &str = "1";
+const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+const REQUIRED_MODEL_FILES: [&str; 3] = ["config.yaml", "model.pt", "tokens.json"];
+
+/// Non-secret paths and model identity required by the local FunASR adapter.
+#[derive(Clone)]
+pub struct LocalFunAsrConfig {
+    python_executable: OsString,
+    script_path: PathBuf,
+    model_dir: PathBuf,
+    model_name: String,
+}
+
+impl fmt::Debug for LocalFunAsrConfig {
+    /// Redacts local filesystem paths while retaining the safe model label.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalFunAsrConfig")
+            .field("python_executable", &"[LOCAL]")
+            .field("script_path", &"[LOCAL]")
+            .field("model_dir", &"[LOCAL]")
+            .field("model_name", &self.model_name)
+            .finish()
+    }
+}
+
+/// Runs SenseVoiceSmall locally through a cancellable Python subprocess.
+#[derive(Clone)]
+pub struct LocalFunAsrProvider {
+    config: LocalFunAsrConfig,
+}
+
+impl fmt::Debug for LocalFunAsrProvider {
+    /// Formats only non-sensitive adapter metadata.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalFunAsrProvider")
+            .field("adapter_id", &ADAPTER_ID)
+            .field("model", &self.config.model_name)
+            .finish()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalInferenceOutput {
+    text: String,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    segments: Vec<LocalInferenceSegment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalInferenceSegment {
+    #[serde(default)]
+    start_ms: Option<u64>,
+    #[serde(default)]
+    end_ms: Option<u64>,
+    text: String,
+}
+
+impl LocalFunAsrProvider {
+    /// Discovers the repository-local model, Python runtime, and bundled inference script.
+    pub fn discover(model_name: impl Into<String>) -> Self {
+        let model_name = model_name.into();
+        let roots = discovery_roots();
+        let model_dir = environment_path("MEETING_DESK_ASR_MODEL_DIR").unwrap_or_else(|| {
+            first_existing(
+                roots
+                    .iter()
+                    .flat_map(|root| {
+                        [
+                            root.join("model").join(&model_name),
+                            root.join("resources").join("model").join(&model_name),
+                        ]
+                    })
+                    .collect(),
+            )
+        });
+        let script_path = environment_path("MEETING_DESK_FUNASR_SCRIPT").unwrap_or_else(|| {
+            first_existing(
+                roots
+                    .iter()
+                    .flat_map(|root| {
+                        [
+                            root.join("src-tauri")
+                                .join("python")
+                                .join("local_funasr.py"),
+                            root.join("python").join("local_funasr.py"),
+                            root.join("resources")
+                                .join("python")
+                                .join("local_funasr.py"),
+                        ]
+                    })
+                    .collect(),
+            )
+        });
+        let python_executable = std::env::var_os("MEETING_DESK_FUNASR_PYTHON")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                let candidates = roots
+                    .iter()
+                    .map(|root| root.join(".venv").join("Scripts").join("python.exe"))
+                    .collect::<Vec<_>>();
+                let discovered = first_existing(candidates);
+                if discovered.exists() {
+                    discovered.into_os_string()
+                } else {
+                    OsString::from("python")
+                }
+            });
+        Self::from_paths(python_executable, script_path, model_dir, model_name)
+    }
+
+    /// Creates an adapter with explicit paths for tests and controlled deployments.
+    pub fn from_paths(
+        python_executable: impl Into<OsString>,
+        script_path: impl Into<PathBuf>,
+        model_dir: impl Into<PathBuf>,
+        model_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            config: LocalFunAsrConfig {
+                python_executable: python_executable.into(),
+                script_path: script_path.into(),
+                model_dir: model_dir.into(),
+                model_name: model_name.into(),
+            },
+        }
+    }
+
+    /// Verifies model files and asks Python to load the model without processing audio.
+    pub async fn check_runtime(&self, timeout: Duration) -> Result<(), ProviderError> {
+        self.validate_files()?;
+        let token = super::CancellationToken::new();
+        let args = [
+            OsString::from("--check"),
+            OsString::from("--model-dir"),
+            self.config.model_dir.as_os_str().to_owned(),
+        ];
+        self.run_process(
+            &args,
+            &token,
+            timeout,
+            "local_runtime_check_failed",
+        )
+        .await
+    }
+
+    /// Validates local files using stable messages that do not reveal absolute paths.
+    fn validate_files(&self) -> Result<(), ProviderError> {
+        if !self.config.script_path.is_file() {
+            return Err(local_configuration_error(
+                "local_funasr_script_missing",
+                "本地 FunASR 推理脚本缺失，请重新安装应用",
+            ));
+        }
+        if !self.config.model_dir.is_dir() {
+            return Err(local_configuration_error(
+                "local_funasr_model_missing",
+                "未找到本地模型，请确认 model/SenseVoiceSmall 文件夹存在",
+            ));
+        }
+        for file_name in REQUIRED_MODEL_FILES {
+            let valid = self
+                .config
+                .model_dir
+                .join(file_name)
+                .metadata()
+                .map(|metadata| metadata.is_file() && metadata.len() > 0)
+                .unwrap_or(false);
+            if !valid {
+                return Err(local_configuration_error(
+                    "local_funasr_model_incomplete",
+                    "本地 SenseVoiceSmall 模型文件不完整",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Copies an ingest-managed file into an isolated temporary directory with cancellation.
+    async fn stage_audio(
+        &self,
+        context: &ProviderCallContext,
+        request: &TranscriptionRequest,
+        temp_dir: &TempDir,
+    ) -> Result<PathBuf, ProviderError> {
+        if request.artifact.reference.staging_metadata.byte_length == 0 {
+            return Err(ProviderError::input("empty_audio", "音频文件为空"));
+        }
+        let suffix = media_suffix(&request.artifact.reference.staging_metadata.mime_type)?;
+        let audio_path = temp_dir.path().join(format!("input.{suffix}"));
+        let source =
+            request.artifact.reader.open_readonly().map_err(|_| {
+                local_resource_error("local_audio_unavailable", "无法读取本地音频文件")
+            })?;
+        let mut source = tokio::fs::File::from_std(source);
+        let mut destination = tokio::fs::File::create(&audio_path).await.map_err(|_| {
+            local_resource_error("local_audio_staging_failed", "无法准备本地转写文件")
+        })?;
+        let remaining = context.remaining();
+        if remaining.is_zero() {
+            return Err(local_timeout_error());
+        }
+        let copied = tokio::select! {
+            _ = context.cancellation_token.cancelled() => return Err(ProviderError::cancelled()),
+            _ = tokio::time::sleep(remaining) => return Err(local_timeout_error()),
+            result = tokio::io::copy(&mut source, &mut destination) => result,
+        }
+        .map_err(|_| local_resource_error("local_audio_staging_failed", "无法准备本地转写文件"))?;
+        destination.flush().await.map_err(|_| {
+            local_resource_error("local_audio_staging_failed", "无法准备本地转写文件")
+        })?;
+        if copied != request.artifact.reference.staging_metadata.byte_length {
+            return Err(ProviderError::input(
+                "audio_metadata_mismatch",
+                "音频文件已发生变化，请重新导入",
+            ));
+        }
+        Ok(audio_path)
+    }
+
+    /// Executes the trusted inference script and terminates it on cancellation or timeout.
+    async fn run_process(
+        &self,
+        args: &[OsString],
+        token: &super::CancellationToken,
+        timeout: Duration,
+        fallback_code: &'static str,
+    ) -> Result<(), ProviderError> {
+        if timeout.is_zero() {
+            return Err(local_timeout_error());
+        }
+        let mut child = Command::new(&self.config.python_executable)
+            .arg(&self.config.script_path)
+            .args(args)
+            .env("PYTHONUTF8", "1")
+            .env("HF_HUB_OFFLINE", "1")
+            .env("MODELSCOPE_OFFLINE", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|_| {
+                local_configuration_error(
+                    "local_funasr_python_missing",
+                    "未找到本地 FunASR Python 环境，请先运行安装命令",
+                )
+            })?;
+        let status = tokio::select! {
+            _ = token.cancelled() => {
+                let _ = child.kill().await;
+                return Err(ProviderError::cancelled());
+            }
+            _ = tokio::time::sleep(timeout) => {
+                let _ = child.kill().await;
+                return Err(local_timeout_error());
+            }
+            result = child.wait() => result.map_err(|_| {
+                local_resource_error(fallback_code, "本地 FunASR 进程执行失败")
+            })?,
+        };
+        if status.success() {
+            return Ok(());
+        }
+        Err(match status.code() {
+            Some(20) => local_configuration_error(
+                "local_funasr_dependency_missing",
+                "本地 Python 环境缺少 FunASR 依赖，请先运行安装命令",
+            ),
+            Some(21) => local_configuration_error(
+                "local_funasr_model_load_failed",
+                "本地 SenseVoiceSmall 模型加载失败，请检查模型文件",
+            ),
+            Some(22) => ProviderError::input(
+                "local_audio_decode_failed",
+                "无法解码该媒体文件，请检查格式或 FFmpeg 环境",
+            ),
+            _ => local_resource_error(fallback_code, "本地语音转写失败"),
+        })
+    }
+
+    /// Parses the bounded local JSON result into the provider-neutral transcript contract.
+    async fn read_output(
+        &self,
+        output_path: &Path,
+        started_at: chrono::DateTime<Utc>,
+        duration_ms: Option<u64>,
+    ) -> Result<Transcript, ProviderError> {
+        let metadata = tokio::fs::metadata(output_path).await.map_err(|_| {
+            local_resource_error("local_funasr_output_missing", "本地转写未生成结果")
+        })?;
+        if metadata.len() == 0 || metadata.len() > MAX_OUTPUT_BYTES {
+            return Err(ProviderError::protocol(
+                "invalid_local_funasr_output",
+                "本地转写结果大小无效",
+            ));
+        }
+        let bytes = tokio::fs::read(output_path).await.map_err(|_| {
+            local_resource_error("local_funasr_output_unavailable", "无法读取本地转写结果")
+        })?;
+        let output = serde_json::from_slice::<LocalInferenceOutput>(&bytes).map_err(|_| {
+            ProviderError::protocol("invalid_local_funasr_output", "本地转写结果格式无效")
+        })?;
+        if output.text.trim().is_empty() {
+            return Err(ProviderError::input(
+                "empty_transcript",
+                "本地模型未检测到可转写语音",
+            ));
+        }
+        let segments = output
+            .segments
+            .into_iter()
+            .enumerate()
+            .filter(|(_, segment)| !segment.text.trim().is_empty())
+            .map(|(index, segment)| TranscriptSegment {
+                id: format!("s{:04}", index + 1),
+                start_ms: segment.start_ms,
+                end_ms: segment.end_ms,
+                speaker_label: None,
+                text: segment.text,
+                confidence: None,
+            })
+            .collect();
+        Ok(Transcript {
+            schema_version: "1".to_string(),
+            text: output.text,
+            language: output.language,
+            duration_ms,
+            segments,
+            provider_metadata: ProviderMetadata {
+                provider_id: "local_funasr".to_string(),
+                adapter_id: ADAPTER_ID.to_string(),
+                adapter_version: ADAPTER_VERSION.to_string(),
+                model: self.config.model_name.clone(),
+                remote_request_id: None,
+                started_at,
+                completed_at: Utc::now(),
+            },
+        })
+    }
+}
+
+#[async_trait]
+impl TranscriptionProvider for LocalFunAsrProvider {
+    /// Declares local replay and cancellation behavior without claiming unavailable timestamps.
+    fn capabilities(&self) -> TranscriptionCapabilities {
+        TranscriptionCapabilities {
+            evidence: CapabilityEvidence::Verified,
+            accepted_media_types: vec![
+                "audio/mpeg".to_string(),
+                "audio/wav".to_string(),
+                "audio/mp4".to_string(),
+                "video/mp4".to_string(),
+                "video/quicktime".to_string(),
+            ],
+            max_audio_bytes: None,
+            max_duration_ms: None,
+            supports_async_jobs: false,
+            supports_timestamps: false,
+            supports_speaker_labels: false,
+            supports_confidence: false,
+            supports_remote_cancel: false,
+            supports_remote_urls: false,
+            replay_safety: ReplaySafety::VerifiedAlwaysSafe,
+        }
+    }
+
+    /// Stages one managed offline file and runs SenseVoiceSmall entirely on this computer.
+    async fn transcribe(
+        &self,
+        context: &ProviderCallContext,
+        request: TranscriptionRequest,
+        _credential: Option<&ProviderCredential>,
+    ) -> Result<Transcript, ProviderError> {
+        self.validate_files()?;
+        if context.cancellation_token.is_cancelled() {
+            return Err(ProviderError::cancelled());
+        }
+        let started_at = Utc::now();
+        let duration_ms = request.artifact.reference.staging_metadata.duration_ms;
+        let temp_dir = tempfile::Builder::new()
+            .prefix("meeting-desk-local-asr-")
+            .tempdir()
+            .map_err(|_| {
+                local_resource_error("local_temp_unavailable", "无法创建本地转写临时目录")
+            })?;
+        let audio_path = self.stage_audio(context, &request, &temp_dir).await?;
+        let output_path = temp_dir.path().join("result.json");
+        let language = request
+            .options
+            .language_hint
+            .as_deref()
+            .filter(|value| matches!(*value, "zh" | "en" | "yue" | "ja" | "ko"))
+            .unwrap_or("auto");
+        let args = vec![
+            OsString::from("--model-dir"),
+            self.config.model_dir.as_os_str().to_owned(),
+            OsString::from("--audio"),
+            audio_path.as_os_str().to_owned(),
+            OsString::from("--output"),
+            output_path.as_os_str().to_owned(),
+            OsString::from("--language"),
+            OsString::from(language),
+        ];
+        self.run_process(
+            &args,
+            &context.cancellation_token,
+            context.remaining(),
+            "local_funasr_inference_failed",
+        )
+        .await?;
+        self.read_output(&output_path, started_at, duration_ms)
+            .await
+    }
+}
+
+/// Returns candidate roots for development, installed resources, and explicit overrides.
+fn discovery_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(current) = std::env::current_dir() {
+        roots.extend(current.ancestors().take(5).map(Path::to_path_buf));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            roots.extend(parent.ancestors().take(5).map(Path::to_path_buf));
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Reads one non-empty path override without logging its value.
+fn environment_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Selects the first existing candidate, falling back deterministically when none exist.
+fn first_existing(candidates: Vec<PathBuf>) -> PathBuf {
+    candidates
+        .iter()
+        .find(|candidate| candidate.exists())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
+        .unwrap_or_default()
+}
+
+/// Maps a validated ingest MIME type to a safe temporary filename suffix.
+fn media_suffix(mime_type: &str) -> Result<&'static str, ProviderError> {
+    match mime_type {
+        "audio/mpeg" => Ok("mp3"),
+        "audio/wav" | "audio/x-wav" => Ok("wav"),
+        "audio/mp4" => Ok("m4a"),
+        "video/mp4" => Ok("mp4"),
+        "video/quicktime" => Ok("mov"),
+        _ => Err(ProviderError::input(
+            "unsupported_audio",
+            "本地模型不支持该媒体格式",
+        )),
+    }
+}
+
+/// Creates a sanitized local configuration error.
+fn local_configuration_error(code: &'static str, message: &'static str) -> ProviderError {
+    ProviderError::configuration(code, message)
+}
+
+/// Creates a sanitized local resource error without paths or process output.
+fn local_resource_error(code: &'static str, message: &'static str) -> ProviderError {
+    ProviderError::new(
+        code,
+        ProviderErrorCategory::LocalResource,
+        false,
+        true,
+        message,
+        None,
+        None,
+        OperationOutcome::Failed,
+    )
+}
+
+/// Creates a local inference timeout error with provider-neutral semantics.
+fn local_timeout_error() -> ProviderError {
+    ProviderError::new(
+        "local_funasr_timeout",
+        ProviderErrorCategory::Timeout,
+        false,
+        true,
+        "本地语音转写超过设置的超时时间",
+        None,
+        None,
+        OperationOutcome::Unknown,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::Arc;
+
+    use chrono::Utc;
+
+    use super::*;
+    use crate::ingest::{AudioArtifactRef, AudioSourceKind, StagingMetadata};
+    use crate::providers::{ManagedAudioArtifact, TranscriptionOptions};
+
+    /// Creates the minimum valid model marker files used by subprocess tests.
+    fn create_model_fixture(root: &Path) {
+        fs::create_dir_all(root).expect("model fixture directory");
+        for name in REQUIRED_MODEL_FILES {
+            fs::write(root.join(name), b"fixture").expect("model fixture file");
+        }
+    }
+
+    /// Creates a managed audio request without exposing its source path to the provider DTO.
+    fn request_for(path: PathBuf, bytes: u64) -> TranscriptionRequest {
+        let artifact = AudioArtifactRef {
+            id: "artifact-local-test".to_string(),
+            import_batch_id: None,
+            source_kind: AudioSourceKind::UserSelectedFile,
+            staging_metadata: StagingMetadata {
+                mime_type: "audio/wav".to_string(),
+                byte_length: bytes,
+                duration_ms: Some(1_000),
+                sha256: None,
+                validated_at: Utc::now(),
+            },
+        };
+        TranscriptionRequest {
+            artifact: ManagedAudioArtifact::new(
+                artifact,
+                Arc::new(move || std::fs::File::open(&path)),
+            ),
+            options: TranscriptionOptions::default(),
+        }
+    }
+
+    /// Verifies that local filesystem paths never appear in Debug output.
+    #[test]
+    fn debug_redacts_local_paths() {
+        let provider = LocalFunAsrProvider::from_paths(
+            "private-python.exe",
+            "private-script.py",
+            "private-model",
+            "SenseVoiceSmall",
+        );
+        let debug = format!("{:?}", provider.config);
+        assert!(!debug.contains("private-python"));
+        assert!(!debug.contains("private-script"));
+        assert!(!debug.contains("private-model"));
+    }
+
+    /// Verifies the runtime check passes the validated model directory to Python for loading.
+    #[tokio::test]
+    async fn runtime_check_passes_model_directory() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let model_dir = fixture.path().join("model");
+        create_model_fixture(&model_dir);
+        let script_path = fixture.path().join("check_funasr.py");
+        fs::write(
+            &script_path,
+            r#"import argparse, pathlib
+p = argparse.ArgumentParser()
+p.add_argument('--check', action='store_true', required=True)
+p.add_argument('--model-dir', required=True)
+a = p.parse_args()
+model_dir = pathlib.Path(a.model_dir)
+required = ('config.yaml', 'model.pt', 'tokens.json')
+raise SystemExit(0 if a.check and all((model_dir / name).is_file() for name in required) else 2)
+"#,
+        )
+        .expect("script fixture");
+        let provider =
+            LocalFunAsrProvider::from_paths("python", script_path, model_dir, "SenseVoiceSmall");
+
+        provider
+            .check_runtime(Duration::from_secs(10))
+            .await
+            .expect("runtime check should receive the model directory");
+    }
+
+    /// Verifies the real subprocess boundary with a deterministic offline Python fixture.
+    #[tokio::test]
+    async fn subprocess_result_is_normalized_without_credentials() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let model_dir = fixture.path().join("model");
+        create_model_fixture(&model_dir);
+        let audio_path = fixture.path().join("source.wav");
+        fs::write(&audio_path, b"safe-audio-fixture").expect("audio fixture");
+        let script_path = fixture.path().join("fake_funasr.py");
+        fs::write(
+            &script_path,
+            r#"import argparse, json
+p = argparse.ArgumentParser()
+p.add_argument('--model-dir')
+p.add_argument('--audio')
+p.add_argument('--output')
+p.add_argument('--language')
+p.add_argument('--check', action='store_true')
+a = p.parse_args()
+if not a.check:
+    with open(a.output, 'w', encoding='utf-8') as f:
+        json.dump({'text':'local transcript','language':'zh','segments':[]}, f)
+"#,
+        )
+        .expect("script fixture");
+        let provider =
+            LocalFunAsrProvider::from_paths("python", script_path, model_dir, "SenseVoiceSmall");
+        let context = ProviderCallContext::with_timeout(
+            "task-local-test",
+            "operation-local-test",
+            super::super::CancellationToken::new(),
+            Duration::from_secs(10),
+        );
+        let transcript = provider
+            .transcribe(
+                &context,
+                request_for(audio_path, b"safe-audio-fixture".len() as u64),
+                None,
+            )
+            .await
+            .expect("local subprocess transcript");
+        assert_eq!(transcript.text, "local transcript");
+        assert_eq!(transcript.provider_metadata.provider_id, "local_funasr");
+        assert!(!format!("{transcript:?}").contains("local transcript"));
+    }
+
+    /// Verifies missing model files fail before starting Python.
+    #[tokio::test]
+    async fn missing_model_is_a_sanitized_configuration_error() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let script_path = fixture.path().join("fake_funasr.py");
+        fs::write(&script_path, "raise SystemExit(0)").expect("script fixture");
+        let provider = LocalFunAsrProvider::from_paths(
+            "python",
+            script_path,
+            fixture.path().join("missing-model"),
+            "SenseVoiceSmall",
+        );
+        let error = provider
+            .check_runtime(Duration::from_secs(1))
+            .await
+            .expect_err("missing model must fail");
+        assert_eq!(error.code, "local_funasr_model_missing");
+        assert!(!error
+            .safe_message
+            .contains(fixture.path().to_string_lossy().as_ref()));
+    }
+
+    /// Verifies cancellation terminates an active local inference subprocess.
+    #[tokio::test]
+    async fn cancellation_stops_local_subprocess() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let model_dir = fixture.path().join("model");
+        create_model_fixture(&model_dir);
+        let audio_path = fixture.path().join("source.wav");
+        fs::write(&audio_path, b"safe-audio-fixture").expect("audio fixture");
+        let script_path = fixture.path().join("slow_funasr.py");
+        fs::write(&script_path, "import time\ntime.sleep(30)\n").expect("script fixture");
+        let provider =
+            LocalFunAsrProvider::from_paths("python", script_path, model_dir, "SenseVoiceSmall");
+        let token = super::super::CancellationToken::new();
+        let cancel_token = token.clone();
+        let cancel_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_token.cancel();
+        });
+        let context = ProviderCallContext::with_timeout(
+            "task-cancel-test",
+            "operation-cancel-test",
+            token,
+            Duration::from_secs(10),
+        );
+        let error = provider
+            .transcribe(
+                &context,
+                request_for(audio_path, b"safe-audio-fixture".len() as u64),
+                None,
+            )
+            .await
+            .expect_err("cancelled local process must fail");
+        cancel_task.await.expect("cancel task");
+        assert_eq!(error.code, "cancelled");
+    }
+}

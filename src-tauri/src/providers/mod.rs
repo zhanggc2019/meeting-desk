@@ -6,6 +6,7 @@ mod contract;
 mod error;
 mod factory;
 mod http;
+mod local_funasr;
 mod mock;
 mod openai_compatible;
 mod retry;
@@ -28,6 +29,7 @@ pub use http::{
     ProviderCredentialPlacement, ProviderHttpBody, ProviderHttpConfig, ProviderHttpRequest,
     RawHttpResponse, ReqwestHttpExecutor, TransportError, TransportErrorKind,
 };
+pub use local_funasr::LocalFunAsrProvider;
 pub use mock::{MockCallRecord, MockConfig, MockProvider, MockScenario};
 pub use openai_compatible::{
     openai_chat_completions_minutes_mapping, JsonContentMode, JsonPath, JsonPathSegment,

@@ -15,7 +15,8 @@
 - ✅ 服务未配置完成时会禁用媒体选择，避免创建无法执行的任务。
 - ✅ 支持启动时静默检查 GitHub Release；发现签名更新后由用户确认下载、安装和重启。
 - ✅ GitHub Actions 可在 `main` 分支执行 Windows CI，并在 `v*` 标签上生成签名 NSIS 安装包和 `latest.json`。
-- ⚠️ Xiaomi MiMo、火山引擎、DeepSeek、阿里云百炼通义千问及第三方 OpenAI-compatible 已接入 Provider 编排，但真实 API 互操作仍为 **BLOCKED**。当前版本不会把未验证的真实请求伪装为成功。
+- ✅ 语音转写使用仓库 `model/SenseVoiceSmall` 的本地 FunASR 推理，不上传音频且无需 ASR API Key。
+- ⚠️ DeepSeek、阿里云百炼通义千问及第三方 OpenAI-compatible 纪要 Provider 已接入编排，但真实 API 互操作仍为 **BLOCKED**。当前版本不会把未验证的真实请求伪装为成功。
 
 ## 功能
 
@@ -66,6 +67,8 @@
 - Rust stable，目标工具链 `x86_64-pc-windows-msvc`
 - Visual Studio 2022 C++ Build Tools
 - Microsoft Edge WebView2 Runtime
+- Python 3.12 x64
+- FFmpeg（处理 MP4/MOV 等容器格式时需要）
 
 ## 快速开始
 
@@ -73,7 +76,17 @@
 
 ```powershell
 pnpm install --frozen-lockfile
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r .\src-tauri\python\requirements-local-asr.txt
 ```
+
+从 ModelScope 下载 `iic/SenseVoiceSmall`。请在软件目录（开发环境即仓库根目录）打开 PowerShell，运行：
+
+```powershell
+.\.venv\Scripts\python.exe -c "from modelscope import snapshot_download; snapshot_download('iic/SenseVoiceSmall', local_dir='model/SenseVoiceSmall')"
+```
+
+最终目录应为 `model\SenseVoiceSmall`，并且至少包含 `config.yaml`、`model.pt` 和 `tokens.json`。`model\` 已被 Git 忽略，不会进入源码提交或安装包。下载完成后，可在“服务设置 → 语音转写”中点击“检查环境”；该检查会实际加载一次模型，只有 Python 依赖、模型文件和模型权重均可用时才会成功。
 
 启动浏览器开发模式：
 
@@ -92,7 +105,7 @@ pnpm tauri:dev
 ## 使用流程
 
 1. 启动应用，按照首页引导打开“服务设置”。
-2. 在“服务设置”中分别配置语音转写和会议纪要服务；两项未就绪前不能选择媒体。
+2. 确认 `model\SenseVoiceSmall` 存在，在“服务设置”中点击“检查环境”实际加载本地模型，并配置会议纪要服务。
 3. 选择“单个文件”或“批量处理”。
 4. 选择一个或多个本地音频/视频，批量模式下还可以继续追加。
 5. 选择纪要模板并创建任务。
@@ -107,14 +120,13 @@ pnpm tauri:dev
 
 | 用途 | 内置预设 | 模型 |
 | --- | --- | --- |
-| 语音转写 | Xiaomi MiMo | `mimo-v2.5-asr` |
-| 语音转写 | 火山引擎录音文件识别（极速版，新控制台） | `bigmodel` |
+| 语音转写 | 本地 FunASR | `model/SenseVoiceSmall` |
 | 会议纪要 | Xiaomi MiMo 大模型 | `mimo-v2.5`、`mimo-v2.5-pro` |
 | 会议纪要 | DeepSeek | `deepseek-v4-flash`、`deepseek-v4-pro` |
 | 会议纪要 | 阿里云百炼（通义千问） | `qwen-plus`、`qwen-flash`、`qwen-max` |
 | 会议纪要 | 第三方 OpenAI Chat Completions | 自定义完整地址与模型名，读取 `choices[0].message.content` |
 
-只有第三方 OpenAI Chat Completions 纪要预设会显示可编辑的服务地址与模型名。托管预设的地址和模型白名单由 Rust 后端校验，前端不能覆盖。MiMo ASR 与 MiMo 大模型共用官方 Chat Completions 地址，但分别使用独立预设、模型白名单和密钥绑定，不会根据 URL 混淆业务类型。
+语音转写固定为本地 `SenseVoiceSmall`，旧的在线 ASR 设置会自动迁移到本地预设。只有第三方 OpenAI Chat Completions 纪要预设会显示可编辑的服务地址与模型名；托管纪要预设的地址和模型白名单由 Rust 后端校验，前端不能覆盖。
 
 API Key 的处理原则：
 
@@ -124,13 +136,12 @@ API Key 的处理原则：
 - 不写入 Git、`.env.example`、SQLite、前端日志或会议日志。
 - 密钥绑定到具体 Provider 预设；切换服务商时不会静默复用旧密钥。
 
-MiMo 与火山引擎录音文件适配边界：
+本地 FunASR 适配边界：
 
-- Xiaomi MiMo 使用官方 Chat Completions 端点，只接受 MP3/WAV；音频会在受信任 Rust 后端转换为 data URL，编码后的完整值不得超过 10 MB。
-- 火山引擎使用录音文件极速版 HTTP 端点，支持本地文件 Base64 与 Provider 侧拉取 HTTPS 文件 URL；本地文件上限为 100 MB、2 小时。
-- 火山引擎预设使用新版控制台的单 `X-Api-Key`。旧版控制台的 App ID + Access Token 双凭据未接入，不会把单个输入框伪装成双凭据支持。
-- URL 可能包含临时签名参数，Provider DTO 的调试输出会完整遮蔽 URL。当前桌面 UI/IPC 仍只提供本地文件选择，尚未开放 URL 输入控件。
-- 以上真实 HTTP 契约通过脚本化 mock executor 验证；仓库未包含真实 Key，也未把文档核对描述成真实账号互操作测试。
+- Rust Provider 只接收导入模块提供的受管只读文件句柄，并在应用临时目录创建生命周期受控的推理副本。
+- Python 子进程固定使用 CPU、本地模型和离线环境变量；取消或超时会终止子进程。
+- Python stdout/stderr 不进入普通日志；转写结果通过有大小上限的临时 JSON 返回并在 Provider 完成后删除。
+- 默认自动发现 `.venv\Scripts\python.exe`、`src-tauri\python\local_funasr.py` 和 `model\SenseVoiceSmall`，可通过 `.env.example` 中的进程环境变量覆盖。
 
 `.env.example` 仅用于说明高级环境变量，不会被应用自动加载。普通用户应优先通过应用内设置完成配置。
 
@@ -138,7 +149,7 @@ MiMo 与火山引擎录音文件适配边界：
 pnpm tauri:dev
 ```
 
-Fun-ASR 仍需要实现供应商专用的“文件上传 → 异步提交 → 轮询 → 下载并归一化结果”适配器，因此正式设置界面不提供该预设。详细边界见 [Provider API 契约](docs/api-contract.md)。
+模型目录不会进入 Git 或安装包。开发环境按上面的 PowerShell 命令创建 `.venv`；安装版部署时应显式提供本地模型目录和 Python 运行环境。
 
 ## 测试
 
@@ -238,10 +249,9 @@ docs/                      架构、API、安全、测试和 UI 文档
 
 ## 已知限制
 
-- 真实 Fun-ASR 媒体上传、异步任务轮询和响应归一化尚未实现。
-- Xiaomi MiMo 与火山引擎适配器、预设、mock HTTP 合约和真实任务编排已接通；在用户明确配置两类 Provider 后，任务会向所选服务发送音频和逐字稿。
-- 火山引擎 Provider 已支持 HTTPS 文件 URL，桌面端 URL 导入的 IPC、持久化和界面尚未实现。
-- Xiaomi MiMo、DeepSeek、阿里云百炼及第三方兼容服务的真实请求与结构化响应仍未使用有效密钥完成互操作验证。
+- 当前本地 ASR 每个任务会重新加载模型，批量任务的模型常驻复用尚未实现。
+- SenseVoiceSmall 当前只输出纯文本和语种，不提供说话人标签、置信度或可靠的逐句时间戳。
+- DeepSeek、阿里云百炼及第三方兼容纪要服务的真实请求与结构化响应仍未使用有效密钥完成互操作验证。
 - 长转写的 map/reduce 分块总结尚未实现。
 - MP3 导入校验暂不计算时长。
 - 远端任务撤销需要在供应商契约验证后接入。

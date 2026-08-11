@@ -18,15 +18,17 @@ function hasCompleteRealProviderConfig(provider: PublicProviderSettings): boolea
   if (provider.kind === "mock") return false;
   if (provider.readiness !== undefined) return provider.readiness === "ready";
   return provider.ready ?? (
+    provider.kind === "local_funasr" || (
     provider.endpoint.trim().length > 0
     && provider.model.trim().length > 0
     && provider.secretConfigured
+    )
   );
 }
 
 /** 返回不暴露敏感配置的 Provider 状态文案。 */
 function getProviderStatusCopy(provider: PublicProviderSettings): string {
-  if (hasCompleteRealProviderConfig(provider)) return "真实服务配置已填写";
+  if (hasCompleteRealProviderConfig(provider)) return provider.kind === "local_funasr" ? "本地模型已配置" : "真实服务配置已填写";
   if (provider.kind === "mock") return "旧版演示配置已停用，请重新配置";
   return provider.validationMessage?.trim() || "配置不完整，请检查地址、模型和密钥";
 }
@@ -241,13 +243,13 @@ export function WorkspacePage() {
         <section className="setup-guide" aria-labelledby="setup-title">
           <div className="setup-guide-copy">
             <span className="eyebrow">首次使用设置</span>
-            <h2 id="setup-title">开始前，请先连接两项服务</h2>
-            <p>完成语音转写和纪要生成服务配置后，才可以选择本地媒体；实际连通性以连接测试结果为准。</p>
+            <h2 id="setup-title">开始前，请先完成处理配置</h2>
+            <p>确认本地语音模型和纪要生成服务后，即可选择本地媒体。</p>
           </div>
           <div className="setup-checklist" aria-label="服务配置状态">
             <div>
               <span className="setup-index">01</span>
-              <span><strong>离线文件 ASR 转写接口</strong><small>{getProviderStatusCopy(settings.transcription)}</small></span>
+              <span><strong>本地 ASR 语音模型</strong><small>{getProviderStatusCopy(settings.transcription)}</small></span>
             </div>
             <div>
               <span className="setup-index">02</span>
@@ -260,7 +262,7 @@ export function WorkspacePage() {
         </section>
       ) : null}
 
-      {providerSetup.complete ? <div className="provider-ready-strip" role="status"><span aria-hidden="true" />两项真实服务配置已填写（实际连通性以测试结果为准）</div> : null}
+      {providerSetup.complete ? <div className="provider-ready-strip" role="status"><span aria-hidden="true" />本地转写与会议纪要服务均已就绪</div> : null}
 
       <section className="import-mode-section" aria-labelledby="import-mode-title">
         <div className="import-mode-heading">

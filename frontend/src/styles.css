@@ -581,6 +581,15 @@ progress { display: block; width: 95px; height: 3px; margin-top: 5px; accent-col
 .trusted-endpoint span, .trusted-endpoint strong, .trusted-endpoint small { display: block; }
 .trusted-endpoint strong { color: var(--ink); font-size: 12px; }
 .trusted-endpoint small { margin-top: 2px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.local-model-guide { padding: 12px; color: #596975; background: #fff; border: 1px solid var(--line); border-radius: 7px; }
+.local-model-guide-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.local-model-guide strong { color: var(--ink); font-size: 12px; }
+.local-model-guide p { margin: 4px 0 0; font-size: 11px; line-height: 1.55; }
+.local-model-guide code { overflow-wrap: anywhere; color: var(--ink); font-family: "Cascadia Code", Consolas, monospace; }
+.local-model-guide .button { flex: 0 0 auto; min-height: 32px; padding: 0 10px; font-size: 11px; }
+.copy-status { display: block; margin-top: 8px; font-size: 11px; font-weight: 650; }
+.copy-status.success { color: var(--success); }
+.copy-status.error { color: var(--danger); }
 .secret-input { display: flex; align-items: center; gap: 8px; min-height: 37px; padding: 0 10px; background: #fff; border: 1px solid var(--line-strong); border-radius: 7px; }
 .secret-input input { min-height: auto; padding: 0; border: 0; outline: 0; }
 .advanced-settings { margin-top: 15px; border-top: 1px solid var(--line); }
@@ -608,6 +617,11 @@ progress { display: block; width: 95px; height: 3px; margin-top: 5px; accent-col
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
 
 .spin { animation: spin .8s linear infinite; }
+
+@media (max-width: 680px) {
+  .local-model-guide-header { align-items: stretch; flex-direction: column; }
+  .local-model-guide .button { align-self: flex-start; }
+}
 
 @keyframes page-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 @keyframes drawer-enter { from { transform: translateX(18px); opacity: .75; } to { transform: none; opacity: 1; } }

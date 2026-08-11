@@ -6,11 +6,10 @@ async function createConfiguredClient() {
   const client = createMockDesktopClient();
   await client.saveProviderSettings({
     transcription: {
-      presetId: "xiaomi_mimo_asr",
-      kind: "xiaomi_mimo",
-      endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
-      model: "mimo-v2.5-asr",
-      apiKey: "test-transcription-key",
+      presetId: "local_funasr",
+      kind: "local_funasr",
+      endpoint: "local://model/SenseVoiceSmall",
+      model: "SenseVoiceSmall",
       connectTimeoutMs: 5000,
       requestTimeoutMs: 60_000,
       maxRetries: 1,
@@ -41,11 +40,10 @@ describe("浏览器测试 DesktopClient", () => {
     const client = createMockDesktopClient();
     const saved = await client.saveProviderSettings({
       transcription: {
-        presetId: "xiaomi_mimo_asr",
-        kind: "xiaomi_mimo",
-        endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
-        model: "mimo-v2.5-asr",
-        apiKey: "test-only-secret-value",
+        presetId: "local_funasr",
+        kind: "local_funasr",
+        endpoint: "local://model/SenseVoiceSmall",
+        model: "SenseVoiceSmall",
         connectTimeoutMs: 5000,
         requestTimeoutMs: 60_000,
         maxRetries: 1,
@@ -61,8 +59,9 @@ describe("浏览器测试 DesktopClient", () => {
       },
     });
 
-    expect(saved.transcription.secretConfigured).toBe(true);
-    expect(saved.transcription.presetId).toBe("xiaomi_mimo_asr");
+    expect(saved.transcription.secretConfigured).toBe(false);
+    expect(saved.transcription.ready).toBe(true);
+    expect(saved.transcription.presetId).toBe("local_funasr");
     expect(saved.transcription).not.toHaveProperty("apiKey");
     expect(JSON.stringify(saved)).not.toContain("test-only-secret-value");
   });
@@ -70,14 +69,17 @@ describe("浏览器测试 DesktopClient", () => {
   it("不会把未发起网络请求的真实 Provider 误报为连接成功", async () => {
     const client = createMockDesktopClient();
     const unconfiguredResult = await client.testProviderConnection("transcription");
-    expect(unconfiguredResult).toEqual({ ok: false, safeMessage: "请先保存 API Key" });
+    expect(unconfiguredResult).toEqual({
+      ok: false,
+      safeMessage: "浏览器测试环境无法检查本地模型，请在 Windows 桌面应用中检查环境",
+    });
 
     await client.saveProviderSettings({
       transcription: {
-        presetId: "xiaomi_mimo_asr",
-        kind: "xiaomi_mimo",
-        endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
-        model: "mimo-v2.5-asr",
+        presetId: "local_funasr",
+        kind: "local_funasr",
+        endpoint: "local://model/SenseVoiceSmall",
+        model: "SenseVoiceSmall",
         connectTimeoutMs: 5000,
         requestTimeoutMs: 60_000,
         maxRetries: 1,
@@ -96,7 +98,7 @@ describe("浏览器测试 DesktopClient", () => {
 
     await expect(client.testProviderConnection("transcription")).resolves.toEqual({
       ok: false,
-      safeMessage: "请先保存 API Key",
+      safeMessage: "浏览器测试环境无法检查本地模型，请在 Windows 桌面应用中检查环境",
     });
     await expect(client.testProviderConnection("minutes")).resolves.toEqual({
       ok: false,
@@ -115,10 +117,10 @@ describe("浏览器测试 DesktopClient", () => {
       maxRetries: 1,
     } as const;
     const transcription = {
-      presetId: "xiaomi_mimo_asr",
-      kind: "xiaomi_mimo",
-      endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
-      model: "mimo-v2.5-asr",
+      presetId: "local_funasr",
+      kind: "local_funasr",
+      endpoint: "local://model/SenseVoiceSmall",
+      model: "SenseVoiceSmall",
       connectTimeoutMs: 5000,
       requestTimeoutMs: 60_000,
       maxRetries: 1,

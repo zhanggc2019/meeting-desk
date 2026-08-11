@@ -1,5 +1,8 @@
 # Node / Vite
 node_modules/
+.venv/
+__pycache__/
+*.py[cod]
 .pnpm-store/
 .vite/
 dist/
@@ -39,6 +42,7 @@ credentials.local.*
 *.sqlite3
 local-data/
 recordings/
+model/
 exports/
 
 # 用户录音与媒体文件（测试音频由测试代码临时生成）

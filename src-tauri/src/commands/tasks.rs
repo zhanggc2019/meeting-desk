@@ -59,10 +59,15 @@ fn load_processing_providers(state: &AppState) -> Result<ProcessingProviders, Co
         .map_err(|error| provider_configuration_error(error.safe_message))?;
     let minutes = build_minutes_provider(&settings.minutes)
         .map_err(|error| provider_configuration_error(error.safe_message))?;
-    let transcription_credential = load_provider_credential(
-        SecretKind::Transcription,
-        settings.transcription.credential_preset_id.as_deref(),
-    )?;
+    let transcription_credential =
+        if settings.transcription.preset_id == crate::config::PRESET_LOCAL_FUNASR {
+            None
+        } else {
+            load_provider_credential(
+                SecretKind::Transcription,
+                settings.transcription.credential_preset_id.as_deref(),
+            )?
+        };
     let minutes_credential = load_provider_credential(
         SecretKind::Minutes,
         settings.minutes.credential_preset_id.as_deref(),

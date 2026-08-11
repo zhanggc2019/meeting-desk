@@ -8,6 +8,7 @@ use crate::app_state::AppState;
 use crate::commands::CommandError;
 use crate::config;
 use crate::domain::{PublicProviderConfig, PublicSettings};
+use crate::providers::LocalFunAsrProvider;
 use crate::secrets::{self, SecretKind};
 
 const SETTINGS_KEY: &str = "provider_settings_v1";
@@ -97,14 +98,6 @@ pub fn save_provider_settings(
         previous.minutes.secret_configured || has_new_secret(&input.minutes),
     )?;
     if let Some(secret) = input
-        .transcription
-        .api_key
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        save_secret(SecretKind::Transcription, &transcription, secret)?;
-    }
-    if let Some(secret) = input
         .minutes
         .api_key
         .as_deref()
@@ -157,6 +150,19 @@ pub async fn test_provider_connection(
             ))
         }
     };
+    if provider.preset_id == config::PRESET_LOCAL_FUNASR {
+        let local = LocalFunAsrProvider::discover(provider.model.clone());
+        return Ok(match local.check_runtime(Duration::from_secs(30)).await {
+            Ok(()) => ProviderConnectionResult {
+                ok: true,
+                safe_message: "本地 SenseVoiceSmall 模型与 FunASR 运行环境可用".to_string(),
+            },
+            Err(error) => ProviderConnectionResult {
+                ok: false,
+                safe_message: error.safe_message,
+            },
+        });
+    }
     let binding_id = provider.credential_preset_id.as_deref().ok_or_else(|| {
         CommandError::new(
             "provider_not_configured",
@@ -253,10 +259,23 @@ fn migrate_public_provider(
     target: ProviderTarget,
     legacy_secret_exists: bool,
 ) -> PublicProviderConfig {
+    if target == ProviderTarget::Transcription {
+        provider.preset_id = config::PRESET_LOCAL_FUNASR.to_string();
+        provider.kind = "local_funasr".to_string();
+        provider.endpoint = config::LOCAL_FUNASR_ENDPOINT.to_string();
+        provider.model = config::LOCAL_FUNASR_MODEL.to_string();
+        provider.credential_preset_id = None;
+        provider.secret_configured = false;
+        provider.request_timeout_ms = provider
+            .request_timeout_ms
+            .max(config::LOCAL_FUNASR_DEFAULT_TIMEOUT_MS);
+        provider.max_retries = 0;
+        return provider;
+    }
     let was_legacy_mock = provider.preset_id == config::PRESET_MOCK || provider.kind == "mock";
     if was_legacy_mock {
         provider.preset_id = match target {
-            ProviderTarget::Transcription => config::PRESET_XIAOMI_MIMO_ASR,
+            ProviderTarget::Transcription => config::PRESET_LOCAL_FUNASR,
             ProviderTarget::Minutes => config::PRESET_DEEPSEEK,
         }
         .to_string();
@@ -317,6 +336,15 @@ fn resolve_provider(
     let preset_id = effective_preset_id(input);
     validate_preset_target(&preset_id, target)?;
     let (kind, endpoint, model) = match preset_id.as_str() {
+        config::PRESET_LOCAL_FUNASR => (
+            "local_funasr".to_string(),
+            config::LOCAL_FUNASR_ENDPOINT.to_string(),
+            managed_model(
+                &input.model,
+                &[config::LOCAL_FUNASR_MODEL],
+                config::LOCAL_FUNASR_MODEL,
+            )?,
+        ),
         config::PRESET_DASHSCOPE_FUNASR_CN => (
             "dashscope_funasr".to_string(),
             config::DASHSCOPE_FUNASR_CN_ENDPOINT.to_string(),
@@ -393,7 +421,9 @@ fn resolve_provider(
         validation_message: String::new(),
     };
     let expected_binding = config::credential_binding_id(&provider);
-    provider.credential_preset_id = if has_new_secret(input) {
+    provider.credential_preset_id = if provider.preset_id == config::PRESET_LOCAL_FUNASR {
+        None
+    } else if has_new_secret(input) {
         Some(expected_binding.clone())
     } else {
         previous_credential_preset_id
@@ -407,6 +437,13 @@ fn resolve_provider(
 /// 将托管预设恢复为后端固定字段，避免旧配置或本地篡改改变供应商地址。
 fn canonicalize_managed_provider(provider: &mut PublicProviderConfig, target: ProviderTarget) {
     match (provider.preset_id.as_str(), target) {
+        (config::PRESET_LOCAL_FUNASR, ProviderTarget::Transcription) => {
+            provider.kind = "local_funasr".to_string();
+            provider.endpoint = config::LOCAL_FUNASR_ENDPOINT.to_string();
+            provider.model = config::LOCAL_FUNASR_MODEL.to_string();
+            provider.credential_preset_id = None;
+            provider.secret_configured = false;
+        }
         (config::PRESET_DASHSCOPE_FUNASR_CN, ProviderTarget::Transcription) => {
             provider.kind = "dashscope_funasr".to_string();
             provider.endpoint = config::DASHSCOPE_FUNASR_CN_ENDPOINT.to_string();
@@ -494,13 +531,8 @@ fn effective_preset_id(input: &ProviderSettingsInput) -> String {
 fn validate_preset_target(preset_id: &str, target: ProviderTarget) -> Result<(), CommandError> {
     let supported = matches!(
         (preset_id, target),
-        (
-            config::PRESET_XIAOMI_MIMO_ASR,
-            ProviderTarget::Transcription
-        ) | (
-            config::PRESET_VOLCENGINE_ASR_FLASH,
-            ProviderTarget::Transcription
-        ) | (config::PRESET_DEEPSEEK, ProviderTarget::Minutes)
+        (config::PRESET_LOCAL_FUNASR, ProviderTarget::Transcription)
+            | (config::PRESET_DEEPSEEK, ProviderTarget::Minutes)
             | (config::PRESET_XIAOMI_MIMO_LLM, ProviderTarget::Minutes)
             | (config::PRESET_ALIYUN_BAILIAN, ProviderTarget::Minutes)
             | (config::PRESET_CUSTOM_OPENAI, ProviderTarget::Minutes)
@@ -543,8 +575,14 @@ fn has_new_secret(input: &ProviderSettingsInput) -> bool {
 
 /// 校验超时与重试范围，避免异常值绕过前端限制。
 fn validate_limits(input: &ProviderSettingsInput) -> Result<(), CommandError> {
+    let max_request_timeout =
+        if input.preset_id == config::PRESET_LOCAL_FUNASR || input.kind == "local_funasr" {
+            config::LOCAL_FUNASR_MAX_TIMEOUT_MS
+        } else {
+            600_000
+        };
     if !(1_000..=60_000).contains(&input.connect_timeout_ms)
-        || !(5_000..=600_000).contains(&input.request_timeout_ms)
+        || !(5_000..=max_request_timeout).contains(&input.request_timeout_ms)
         || input.max_retries > 5
     {
         return Err(CommandError::new(
@@ -728,34 +766,45 @@ mod tests {
         assert!(resolve_provider(&input, ProviderTarget::Transcription, None, false).is_err());
     }
 
-    /// 验证 Xiaomi MiMo 托管预设固定官方地址和唯一模型。
+    /// 验证本地 FunASR 固定模型边界、无需凭据并允许长会议超时。
     #[test]
-    fn managed_xiaomi_mimo_uses_fixed_contract() {
+    fn local_funasr_uses_fixed_fields_without_credential() {
+        let mut input = valid_input();
+        input.preset_id = config::PRESET_LOCAL_FUNASR.to_string();
+        input.kind = "untrusted_kind".to_string();
+        input.endpoint = "https://attacker.example.test/collect".to_string();
+        input.model.clear();
+        input.request_timeout_ms = config::LOCAL_FUNASR_DEFAULT_TIMEOUT_MS;
+        let public = resolve_provider(&input, ProviderTarget::Transcription, None, false)
+            .expect("local FunASR settings");
+        assert_eq!(public.kind, "local_funasr");
+        assert_eq!(public.endpoint, config::LOCAL_FUNASR_ENDPOINT);
+        assert_eq!(public.model, config::LOCAL_FUNASR_MODEL);
+        assert!(public.credential_preset_id.is_none());
+        assert!(!public.secret_configured);
+        assert!(public.ready);
+    }
+
+    /// 验证已停用的 Xiaomi MiMo 在线 ASR 预设不能保存。
+    #[test]
+    fn rejects_disabled_xiaomi_mimo_asr() {
         let mut input = valid_input();
         input.preset_id = config::PRESET_XIAOMI_MIMO_ASR.to_string();
         input.kind = "untrusted_kind".to_string();
         input.endpoint = "https://attacker.example.test/collect".to_string();
         input.model.clear();
-        let public = resolve_provider(&input, ProviderTarget::Transcription, None, false)
-            .expect("MiMo 托管预设应使用固定字段");
-        assert_eq!(public.kind, "xiaomi_mimo");
-        assert_eq!(public.endpoint, config::XIAOMI_MIMO_ASR_ENDPOINT);
-        assert_eq!(public.model, "mimo-v2.5-asr");
+        assert!(resolve_provider(&input, ProviderTarget::Transcription, None, false).is_err());
     }
 
-    /// 验证火山引擎托管预设固定极速版地址和模型。
+    /// 验证已停用的火山引擎在线 ASR 预设不能保存。
     #[test]
-    fn managed_volcengine_flash_uses_fixed_contract() {
+    fn rejects_disabled_volcengine_asr() {
         let mut input = valid_input();
         input.preset_id = config::PRESET_VOLCENGINE_ASR_FLASH.to_string();
         input.kind = "untrusted_kind".to_string();
         input.endpoint = "https://attacker.example.test/collect".to_string();
         input.model.clear();
-        let public = resolve_provider(&input, ProviderTarget::Transcription, None, false)
-            .expect("火山引擎托管预设应使用固定字段");
-        assert_eq!(public.kind, "volcengine_asr");
-        assert_eq!(public.endpoint, config::VOLCENGINE_ASR_FLASH_ENDPOINT);
-        assert_eq!(public.model, "bigmodel");
+        assert!(resolve_provider(&input, ProviderTarget::Transcription, None, false).is_err());
     }
 
     /// 验证 MiMo 大模型预设固定官方地址并允许两个公开文本模型。
@@ -898,9 +947,9 @@ mod tests {
         assert_eq!(custom.preset_id, config::PRESET_CUSTOM_OPENAI);
     }
 
-    /// 验证没有可执行适配器的旧版自定义 ASR 配置不会被标记为就绪。
+    /// 验证旧版在线或自定义 ASR 配置会迁移为本地 SenseVoiceSmall。
     #[test]
-    fn legacy_custom_transcription_is_not_executable() {
+    fn legacy_custom_transcription_migrates_to_local_funasr() {
         let custom = PublicProviderConfig {
             preset_id: config::PRESET_CUSTOM_OPENAI.to_string(),
             kind: "openai_compatible".to_string(),
@@ -919,7 +968,11 @@ mod tests {
         let migrated = migrate_public_provider(custom, ProviderTarget::Transcription, true);
         let evaluated = config::evaluate_provider_readiness(migrated);
 
-        assert_eq!(evaluated.kind, "invalid");
-        assert!(!evaluated.ready);
+        assert_eq!(evaluated.preset_id, config::PRESET_LOCAL_FUNASR);
+        assert_eq!(evaluated.kind, "local_funasr");
+        assert_eq!(evaluated.endpoint, config::LOCAL_FUNASR_ENDPOINT);
+        assert_eq!(evaluated.model, config::LOCAL_FUNASR_MODEL);
+        assert!(!evaluated.secret_configured);
+        assert!(evaluated.ready);
     }
 }

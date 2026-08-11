@@ -22,11 +22,10 @@ async function createConfiguredClient() {
   const client = createMockDesktopClient();
   await client.saveProviderSettings({
     transcription: {
-      presetId: "xiaomi_mimo_asr",
-      kind: "xiaomi_mimo",
-      endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
-      model: "mimo-v2.5-asr",
-      apiKey: "test-transcription-key",
+      presetId: "local_funasr",
+      kind: "local_funasr",
+      endpoint: "local://model/SenseVoiceSmall",
+      model: "SenseVoiceSmall",
       connectTimeoutMs: 5000,
       requestTimeoutMs: 60_000,
       maxRetries: 1,
@@ -47,6 +46,7 @@ async function createConfiguredClient() {
 
 describe("Windows 离线媒体工作台", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     resetAppStore();
   });
 
@@ -178,25 +178,16 @@ describe("Windows 离线媒体工作台", () => {
     expect(screen.queryByText("产品交付节奏讨论")).not.toBeInTheDocument();
   });
 
-  it("使用受信任预设隐藏地址输入并提供受控模型下拉", async () => {
+  it("本地 ASR 隐藏地址和密钥并保留受控纪要预设", async () => {
     const user = userEvent.setup();
     render(<App client={createMockDesktopClient()} />);
     await user.click(screen.getByRole("button", { name: "设置" }));
 
     expect(await screen.findByRole("heading", { name: "服务设置" })).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "xiaomi_mimo_asr");
-    expect(within(screen.getByLabelText("语音转写服务商")).queryByRole("option", { name: /FunASR/ })).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("语音转写服务商")).getByRole("option", { name: "本地 SenseVoiceSmall" })).toBeInTheDocument();
     expect(screen.queryByLabelText("语音转写服务地址")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("语音转写模型")).toHaveValue("mimo-v2.5-asr");
-    expect(screen.getAllByText("官方地址由软件维护").length).toBeGreaterThan(0);
-
-    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "xiaomi_mimo_asr");
-    expect(screen.queryByLabelText("语音转写服务地址")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("语音转写模型")).toHaveValue("mimo-v2.5-asr");
-
-    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "volcengine_asr_flash");
-    expect(screen.queryByLabelText("语音转写服务地址")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("语音转写模型")).toHaveValue("bigmodel");
+    expect(screen.getByLabelText("语音转写模型")).toHaveValue("SenseVoiceSmall");
+    expect(screen.getByText("模型保留在本机")).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText("会议纪要服务商"), "deepseek");
     expect(screen.queryByLabelText("会议纪要服务地址")).not.toBeInTheDocument();
@@ -221,6 +212,40 @@ describe("Windows 离线媒体工作台", () => {
 
   });
 
+  it("默认使用本地 SenseVoiceSmall 且不要求 ASR API Key", async () => {
+    const user = userEvent.setup();
+    render(<App client={createMockDesktopClient()} />);
+    await user.click(screen.getByRole("button", { name: "设置" }));
+
+    const transcriptionSection = await screen.findByRole("region", { name: "语音转写" });
+    expect(within(transcriptionSection).getByLabelText("语音转写服务商")).toHaveValue("local_funasr");
+    expect(within(transcriptionSection).getAllByText(/SenseVoiceSmall/).length).toBeGreaterThan(0);
+    expect(within(transcriptionSection).queryByLabelText("语音转写 API Key")).not.toBeInTheDocument();
+  });
+
+  it("展示本地模型下载来源、放置目录并可复制 PowerShell 命令", async () => {
+    const user = userEvent.setup();
+    const clipboardWrite = vi.spyOn(navigator.clipboard, "writeText");
+    render(<App client={createMockDesktopClient()} />);
+    await user.click(screen.getByRole("button", { name: "设置" }));
+
+    const transcriptionSection = await screen.findByRole("region", { name: "语音转写" });
+    expect(within(transcriptionSection).getByText(/下载来源：ModelScope/)).toBeInTheDocument();
+    expect(within(transcriptionSection).getByText("iic/SenseVoiceSmall")).toBeInTheDocument();
+    expect(within(transcriptionSection).getByText(/model\\SenseVoiceSmall/)).toBeInTheDocument();
+    expect(within(transcriptionSection).getByRole("button", { name: "检查环境" })).toBeInTheDocument();
+
+    await user.click(within(transcriptionSection).getByRole("button", { name: "复制下载命令" }));
+    expect(clipboardWrite).toHaveBeenCalledWith(
+      ".\\.venv\\Scripts\\python.exe -c \"from modelscope import snapshot_download; snapshot_download('iic/SenseVoiceSmall', local_dir='model/SenseVoiceSmall')\"",
+    );
+    expect(await within(transcriptionSection).findByText("下载命令已复制")).toBeInTheDocument();
+
+    clipboardWrite.mockRejectedValueOnce(new Error("clipboard unavailable"));
+    await user.click(within(transcriptionSection).getByRole("button", { name: "复制下载命令" }));
+    expect(await within(transcriptionSection).findByText("复制失败，请确认系统允许访问剪贴板")).toBeInTheDocument();
+  });
+
   it("保存 MiMo 大模型托管配置", async () => {
     const user = userEvent.setup();
     const client = createMockDesktopClient();
@@ -242,32 +267,22 @@ describe("Windows 离线媒体工作台", () => {
 
   });
 
-  it("保存 Xiaomi MiMo 与火山引擎托管转写预设时使用固定字段", async () => {
+  it("保存本地转写预设时使用固定模型标识且不发送密钥", async () => {
     const user = userEvent.setup();
     const client = createMockDesktopClient();
     const saveSettings = vi.spyOn(client, "saveProviderSettings");
     render(<App client={client} />);
     await user.click(screen.getByRole("button", { name: "设置" }));
 
-    await user.selectOptions(await screen.findByLabelText("语音转写服务商"), "xiaomi_mimo_asr");
+    await screen.findByLabelText("语音转写服务商");
     await user.click(screen.getByRole("button", { name: "保存设置" }));
     expect(saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
       transcription: expect.objectContaining({
-        presetId: "xiaomi_mimo_asr",
-        kind: "xiaomi_mimo",
-        endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
-        model: "mimo-v2.5-asr",
-      }),
-    }));
-
-    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "volcengine_asr_flash");
-    await user.click(screen.getByRole("button", { name: "保存设置" }));
-    expect(saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
-      transcription: expect.objectContaining({
-        presetId: "volcengine_asr_flash",
-        kind: "volcengine_asr",
-        endpoint: "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash",
-        model: "bigmodel",
+        presetId: "local_funasr",
+        kind: "local_funasr",
+        endpoint: "local://model/SenseVoiceSmall",
+        model: "SenseVoiceSmall",
+        apiKey: "",
       }),
     }));
   });
@@ -280,12 +295,11 @@ describe("Windows 离线媒体工作台", () => {
     await user.click(screen.getByRole("button", { name: "设置" }));
 
     expect(await screen.findByRole("heading", { name: "服务设置" })).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("语音转写服务商"), "xiaomi_mimo_asr");
     await user.selectOptions(screen.getByLabelText("会议纪要服务商"), "deepseek");
     expect(screen.getByLabelText("会议纪要模型")).toHaveValue("deepseek-v4-flash");
 
     const sentinelSecret = "test-only-secret-value";
-    await user.type(screen.getByLabelText("语音转写 API Key"), sentinelSecret);
+    await user.type(screen.getByLabelText("会议纪要 API Key"), sentinelSecret);
     await user.click(screen.getByRole("button", { name: "保存设置" }));
 
     expect(await screen.findByText("设置已保存")).toBeInTheDocument();
@@ -293,9 +307,9 @@ describe("Windows 离线媒体工作台", () => {
     expect(screen.getAllByText("密钥已配置")).toHaveLength(1);
     expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({
       transcription: expect.objectContaining({
-        presetId: "xiaomi_mimo_asr",
-        endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
-        model: "mimo-v2.5-asr",
+        presetId: "local_funasr",
+        endpoint: "local://model/SenseVoiceSmall",
+        model: "SenseVoiceSmall",
       }),
       minutes: expect.objectContaining({
         presetId: "deepseek",
@@ -309,10 +323,11 @@ describe("Windows 离线媒体工作台", () => {
     const user = userEvent.setup();
     render(<App client={createMockDesktopClient()} />);
 
-    expect(await screen.findByRole("heading", { name: "开始前，请先连接两项服务" })).toBeInTheDocument();
-    expect(screen.getByText("离线文件 ASR 转写接口")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "开始前，请先完成处理配置" })).toBeInTheDocument();
+    expect(screen.getByText("本地 ASR 语音模型")).toBeInTheDocument();
     expect(screen.getByText("纪要生成大模型接口")).toBeInTheDocument();
-    expect(screen.getAllByText("请补充：API Key")).toHaveLength(2);
+    expect(screen.getByText("本地模型已配置")).toBeInTheDocument();
+    expect(screen.getAllByText("请补充：API Key")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "选择音频或视频" })).toBeDisabled();
     expect(screen.getByLabelText("选择本地媒体文件")).toBeDisabled();
     expect(screen.getByText("配置服务后选择媒体").closest(".file-dropzone")).toHaveAttribute("aria-disabled", "true");
@@ -328,9 +343,8 @@ describe("Windows 离线媒体工作台", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     const transcriptionSection = await screen.findByRole("region", { name: "语音转写" });
-    await user.type(within(transcriptionSection).getByLabelText("语音转写 API Key"), "test-only-connection-key");
-    await user.click(within(transcriptionSection).getByRole("button", { name: "测试连接" }));
-    expect(await within(transcriptionSection).findByText(/Windows 桌面应用中测试连接/)).toBeInTheDocument();
+    await user.click(within(transcriptionSection).getByRole("button", { name: "检查环境" }));
+    expect(await within(transcriptionSection).findByText(/Windows 桌面应用中检查环境/)).toBeInTheDocument();
   });
 
   it("在会议详情渲染安全的 Markdown 文档预览", async () => {

@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, KeyRound, LoaderCircle, Save, Server, ShieldCheck, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, ClipboardCopy, KeyRound, LoaderCircle, Save, Server, ShieldCheck, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import type {
   ProviderKind,
@@ -27,34 +27,23 @@ interface ProviderPresetDefinition {
   description: string;
 }
 
-const XIAOMI_MIMO_ASR_ENDPOINT = "https://api.xiaomimimo.com/v1/chat/completions";
-const XIAOMI_MIMO_LLM_ENDPOINT = XIAOMI_MIMO_ASR_ENDPOINT;
-const VOLCENGINE_ASR_FLASH_ENDPOINT = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
+const LOCAL_FUNASR_ENDPOINT = "local://model/SenseVoiceSmall";
+const LOCAL_MODEL_DOWNLOAD_COMMAND = ".\\.venv\\Scripts\\python.exe -c \"from modelscope import snapshot_download; snapshot_download('iic/SenseVoiceSmall', local_dir='model/SenseVoiceSmall')\"";
+const XIAOMI_MIMO_LLM_ENDPOINT = "https://api.xiaomimimo.com/v1/chat/completions";
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions";
 const ALIYUN_BAILIAN_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 
 const TRANSCRIPTION_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
   {
-    id: "xiaomi_mimo_asr",
-    label: "Xiaomi MiMo 语音识别",
-    kind: "xiaomi_mimo",
-    endpoint: XIAOMI_MIMO_ASR_ENDPOINT,
-    defaultModel: "mimo-v2.5-asr",
+    id: "local_funasr",
+    label: "本地 SenseVoiceSmall",
+    kind: "local_funasr",
+    endpoint: LOCAL_FUNASR_ENDPOINT,
+    defaultModel: "SenseVoiceSmall",
     models: [
-      { value: "mimo-v2.5-asr", label: "mimo-v2.5-asr" },
+      { value: "SenseVoiceSmall", label: "SenseVoiceSmall" },
     ],
-    description: "支持 MP3/WAV 录音文件，官方请求地址和模型由软件维护。",
-  },
-  {
-    id: "volcengine_asr_flash",
-    label: "火山引擎录音文件识别（极速版）",
-    kind: "volcengine_asr",
-    endpoint: VOLCENGINE_ASR_FLASH_ENDPOINT,
-    defaultModel: "bigmodel",
-    models: [
-      { value: "bigmodel", label: "豆包录音文件识别大模型" },
-    ],
-    description: "面向新版控制台 X-Api-Key，单次请求返回录音文件转写。",
+    description: "从 model/SenseVoiceSmall 加载模型并在本机 CPU 完成转写。",
   },
 ];
 
@@ -127,13 +116,12 @@ function getPresetDefinition(target: ProviderTarget, presetId: ProviderPresetId)
 function inferPresetId(settings: PublicProviderSettings, target: ProviderTarget): ProviderPresetId {
   const allowed = getPresetDefinitions(target).some((preset) => preset.id === settings.presetId);
   if (settings.presetId && allowed) return settings.presetId;
-  if (settings.kind === "mock") return target === "transcription" ? "xiaomi_mimo_asr" : "deepseek";
-  if (target === "transcription" && settings.endpoint === XIAOMI_MIMO_ASR_ENDPOINT) return "xiaomi_mimo_asr";
-  if (target === "transcription" && settings.endpoint === VOLCENGINE_ASR_FLASH_ENDPOINT) return "volcengine_asr_flash";
+  if (target === "transcription") return "local_funasr";
+  if (settings.kind === "mock") return "deepseek";
   if (target === "minutes" && settings.endpoint === XIAOMI_MIMO_LLM_ENDPOINT) return "xiaomi_mimo_llm";
   if (target === "minutes" && settings.endpoint === DEEPSEEK_ENDPOINT) return "deepseek";
   if (target === "minutes" && settings.endpoint === ALIYUN_BAILIAN_ENDPOINT) return "aliyun_bailian";
-  return target === "transcription" ? "xiaomi_mimo_asr" : "custom_openai_compatible";
+  return "custom_openai_compatible";
 }
 
 /** 将公开设置转换为不会回填密钥的表单草稿。 */
@@ -166,10 +154,12 @@ function getEmptySettings(): PublicSettings {
   return {
     transcription: {
       ...common,
-      presetId: "xiaomi_mimo_asr",
-      kind: "xiaomi_mimo",
-      endpoint: XIAOMI_MIMO_ASR_ENDPOINT,
-      model: "mimo-v2.5-asr",
+      requestTimeoutMs: 3_600_000,
+      maxRetries: 0,
+      presetId: "local_funasr",
+      kind: "local_funasr",
+      endpoint: LOCAL_FUNASR_ENDPOINT,
+      model: "SenseVoiceSmall",
     },
     minutes: {
       ...common,
@@ -322,7 +312,7 @@ export function SettingsDrawer() {
       <button className="drawer-backdrop" type="button" aria-label="关闭设置" onClick={close} />
       <aside className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header className="drawer-header">
-          <div><span className="eyebrow">安全配置</span><h2 id="settings-title">服务设置</h2><p>只需选择服务并填写 Key，密钥保存后不会回显。</p></div>
+          <div><span className="eyebrow">安全配置</span><h2 id="settings-title">服务设置</h2><p>语音在本机转写；会议纪要服务密钥保存后不会回显。</p></div>
           <button className="icon-button" type="button" aria-label="关闭设置" onClick={close} disabled={saving}><X size={18} /></button>
         </header>
 
@@ -381,6 +371,8 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
   const presets = getPresetDefinitions(target);
   const selectedPreset = getPresetDefinition(target, value.presetId);
   const isCustom = isCustomPreset(selectedPreset.id);
+  const isLocal = selectedPreset.kind === "local_funasr";
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
 
   /** 更新一个 Provider 草稿字段。 */
   function update<K extends keyof ProviderDraft>(key: K, nextValue: ProviderDraft[K]) {
@@ -390,6 +382,16 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
   /** 切换供应商预设并自动恢复该预设的可信默认值。 */
   function handlePresetChange(nextPresetId: ProviderPresetId) {
     onChange(applyPreset(value, target, nextPresetId));
+  }
+
+  /** 将 Windows PowerShell 模型下载命令复制到系统剪贴板。 */
+  async function copyModelDownloadCommand() {
+    try {
+      await navigator.clipboard.writeText(LOCAL_MODEL_DOWNLOAD_COMMAND);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("error");
+    }
   }
 
   return (
@@ -410,7 +412,27 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
         {!isCustom ? (
           <div className="trusted-endpoint full-field" role="note">
             <ShieldCheck size={16} aria-hidden="true" />
-            <span><strong>官方地址由软件维护</strong><small>无需填写 Base URL，保存时由桌面端校验并使用受信任地址。</small></span>
+            {isLocal
+              ? <span><strong>模型保留在本机</strong><small>读取 model/SenseVoiceSmall，不上传音频且无需 API Key。</small></span>
+              : <span><strong>官方地址由软件维护</strong><small>无需填写 Base URL，保存时由桌面端校验并使用受信任地址。</small></span>}
+          </div>
+        ) : null}
+
+        {isLocal ? (
+          <div className="local-model-guide full-field" role="note">
+            <div className="local-model-guide-header">
+              <div>
+                <strong>首次使用请下载本地模型</strong>
+                <p>下载来源：ModelScope <code>iic/SenseVoiceSmall</code></p>
+              </div>
+              <button className="button secondary" type="button" onClick={() => void copyModelDownloadCommand()}>
+                <ClipboardCopy size={15} aria-hidden="true" />复制下载命令
+              </button>
+            </div>
+            <p>在软件目录打开 PowerShell 并运行命令，模型应放在 <code>model\SenseVoiceSmall</code>。</p>
+            <p>下载完成后，目录中至少应有 <code>config.yaml</code>、<code>model.pt</code> 和 <code>tokens.json</code>。</p>
+            {copyStatus === "copied" ? <span className="copy-status success" role="status">下载命令已复制</span> : null}
+            {copyStatus === "error" ? <span className="copy-status error" role="alert">复制失败，请确认系统允许访问剪贴板</span> : null}
           </div>
         ) : null}
 
@@ -433,24 +455,26 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
           </>
         ) : null}
 
-        <label className="field full-field">API Key
-          <span className="secret-input"><KeyRound size={16} aria-hidden="true" /><input aria-label={`${title} API Key`} value={value.apiKey} onChange={(event) => update("apiKey", event.target.value)} type="password" autoComplete="new-password" placeholder={secretConfigured ? "已安全保存；留空表示不替换" : "输入后交由 Windows 凭据管理器保存"} /></span>
-        </label>
+        {!isLocal ? (
+          <label className="field full-field">API Key
+            <span className="secret-input"><KeyRound size={16} aria-hidden="true" /><input aria-label={`${title} API Key`} value={value.apiKey} onChange={(event) => update("apiKey", event.target.value)} type="password" autoComplete="new-password" placeholder={secretConfigured ? "已安全保存；留空表示不替换" : "输入后交由 Windows 凭据管理器保存"} /></span>
+          </label>
+        ) : null}
       </div>
 
       <details className="advanced-settings">
         <summary><ChevronDown size={15} aria-hidden="true" />高级设置</summary>
         <div className="settings-grid advanced-settings-grid">
-          <label className="field">连接超时（毫秒）<input type="number" min={1000} max={60000} value={value.connectTimeoutMs} onChange={(event) => update("connectTimeoutMs", Number(event.target.value))} /></label>
-          <label className="field">请求超时（毫秒）<input type="number" min={5000} max={600000} value={value.requestTimeoutMs} onChange={(event) => update("requestTimeoutMs", Number(event.target.value))} /></label>
-          <label className="field">失败重试次数<input type="number" min={0} max={5} value={value.maxRetries} onChange={(event) => update("maxRetries", Number(event.target.value))} /></label>
+          {!isLocal ? <label className="field">连接超时（毫秒）<input type="number" min={1000} max={60000} value={value.connectTimeoutMs} onChange={(event) => update("connectTimeoutMs", Number(event.target.value))} /></label> : null}
+          <label className="field">请求超时（毫秒）<input type="number" min={5000} max={isLocal ? 14_400_000 : 600_000} value={value.requestTimeoutMs} onChange={(event) => update("requestTimeoutMs", Number(event.target.value))} /></label>
+          {!isLocal ? <label className="field">失败重试次数<input type="number" min={0} max={5} value={value.maxRetries} onChange={(event) => update("maxRetries", Number(event.target.value))} /></label> : null}
         </div>
       </details>
 
       <div className="provider-footer">
-        <span className={`secret-status${secretConfigured ? " configured" : ""}`}>{secretConfigured ? "密钥已配置" : "尚未配置密钥"}</span>
+        <span className={`secret-status${isLocal || secretConfigured ? " configured" : ""}`}>{isLocal ? "本地模式" : (secretConfigured ? "密钥已配置" : "尚未配置密钥")}</span>
         <button className="button quiet connection-test-button" type="button" onClick={onTest} disabled={connectionTest.testing}>
-          {connectionTest.testing ? <><LoaderCircle className="spin" size={15} aria-hidden="true" />正在测试</> : "测试连接"}
+          {connectionTest.testing ? <><LoaderCircle className="spin" size={15} aria-hidden="true" />正在检查</> : (isLocal ? "检查环境" : "测试连接")}
         </button>
       </div>
       {connectionTest.result ? (
