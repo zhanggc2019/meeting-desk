@@ -1,5 +1,5 @@
 import { ArrowRight, FileAudio, RefreshCw, RotateCcw, SlidersHorizontal, Trash2, XCircle } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import type { ProcessingTask, TaskQuery } from "../../contracts/desktop";
 import { useDesktopClient } from "../../services/DesktopClientContext";
@@ -42,28 +42,37 @@ export function TasksPage() {
   const [error, setError] = useState<string | null>(null);
 
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId) ?? tasks[0] ?? null, [selectedTaskId, tasks]);
+  const hasActiveTasks = useMemo(
+    () => tasks.some((task) => !["completed", "failed", "cancelled", "interrupted"].includes(task.status)),
+    [tasks],
+  );
 
   /** 从持久化任务源刷新当前筛选结果。 */
-  async function loadTasks() {
+  const loadTasks = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const nextTasks = await client.listProcessingTasks({ filter });
       setTasks(nextTasks);
       setTaskAttentionCount(nextTasks.filter((task) => ["failed", "interrupted"].includes(task.status)).length);
-      if (selectedTaskId && !nextTasks.some((task) => task.id === selectedTaskId)) {
-        setSelectedTaskId(null);
-      }
+      setSelectedTaskId((currentId) => currentId && !nextTasks.some((task) => task.id === currentId) ? null : currentId);
     } catch (reason) {
       setError(getSafeErrorMessage(reason));
     } finally {
       setLoading(false);
     }
-  }
+  }, [client, filter, setTaskAttentionCount]);
 
   useEffect(() => {
     void loadTasks();
-  }, [filter]);
+  }, [loadTasks]);
+
+  /** 仅在存在进行中任务时定期刷新队列，并在离开页面时停止。 */
+  useEffect(() => {
+    if (!hasActiveTasks) return undefined;
+    const intervalId = window.setInterval(() => void loadTasks(), 3_000);
+    return () => window.clearInterval(intervalId);
+  }, [hasActiveTasks, loadTasks]);
 
   /** 确认并提交单个任务取消请求。 */
   async function confirmCancelTask() {

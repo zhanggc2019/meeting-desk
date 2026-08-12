@@ -6,6 +6,7 @@ use std::{
 };
 
 use chrono::Utc;
+use log::{error as log_error, info};
 use serde::Deserialize;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
@@ -209,6 +210,11 @@ pub fn create_processing_tasks(
         ));
     }
     let providers = load_processing_providers(state.inner())?;
+    info!(
+        "创建处理任务: artifact_count={}, template_id={}",
+        artifact_ids.len(),
+        template_id,
+    );
     let registry = state.artifacts.lock().map_err(|_| {
         CommandError::new("artifact_registry_unavailable", "音频导入状态不可用", true)
     })?;
@@ -723,8 +729,17 @@ async fn run_task(
         .map_err(|_| crate::storage::StorageError::LockPoisoned)?;
     let succeeded = result.is_ok();
     if token.is_cancelled() {
+        info!("任务被用户取消: task_id={}", task.id);
         mark_cancelled(&mut task);
     } else if let Err(mut error) = result {
+        log_error!(
+            "任务执行失败: task_id={}, code={}, retryable={}, http_status={:?}, message={}",
+            task.id,
+            error.code,
+            error.retryable,
+            error.http_status,
+            error.safe_message,
+        );
         task.status = TaskStatus::Failed;
         task.progress = None;
         let can_retry = error.retryable && task.attempt < task.max_attempts;
@@ -782,6 +797,16 @@ async fn run_provider_pipeline(
     token: CancellationToken,
     task_gate: &Arc<Mutex<()>>,
 ) -> Result<(), SafeTaskError> {
+    info!(
+        "开始执行处理流水线: task_id={}, artifact_id={}, file_size_bytes={}, attempt={}",
+        task.id, artifact.id, artifact.byte_length, task.attempt,
+    );
+
+    // 阶段 1：准备 / 文件检查
+    info!(
+        "[阶段1/6] 准备文件引用: task_id={}, artifact_id={}",
+        task.id, artifact.id,
+    );
     update_task(
         repository,
         task,
@@ -810,6 +835,18 @@ async fn run_provider_pipeline(
         })
     });
     let managed = ManagedAudioArtifact::new(artifact_ref, reader);
+    info!(
+        "[阶段1/6] 文件引用就绪，进入转写阶段: task_id={}, mime_type={}, byte_length={}",
+        task.id,
+        managed.reference.staging_metadata.mime_type,
+        managed.reference.staging_metadata.byte_length,
+    );
+
+    // 阶段 2：语音转写
+    info!(
+        "[阶段2/6] 开始语音转写: task_id={}, timeout_ms={}",
+        task.id, providers.transcription_timeout_ms,
+    );
     update_task(
         repository,
         task,
@@ -824,7 +861,7 @@ async fn run_provider_pipeline(
         token.clone(),
         Duration::from_millis(providers.transcription_timeout_ms),
     );
-    let transcript = providers
+    let transcript_result = providers
         .transcription
         .transcribe(
             &context,
@@ -834,8 +871,21 @@ async fn run_provider_pipeline(
             },
             providers.transcription_credential.as_deref(),
         )
-        .await
-        .map_err(provider_error)?;
+        .await;
+    match &transcript_result {
+        Ok(t) => info!("转写完成: task_id={}, text_len={}", task.id, t.text.len()),
+        Err(e) => log_error!(
+            "转写失败: task_id={}, code={}, retryable={}, http_status={:?}, message={}",
+            task.id,
+            e.code,
+            e.retryable,
+            e.http_status,
+            e.safe_message,
+        ),
+    }
+    let transcript = transcript_result.map_err(provider_error)?;
+
+    // 阶段 3：校验转写结果
     update_task(
         repository,
         task,
@@ -844,6 +894,9 @@ async fn run_provider_pipeline(
         task_gate,
         &token,
     )?;
+
+    // 阶段 4：构建 Prompt + 会议纪要生成
+    info!("[阶段4/6] 构建会议纪要 Prompt: task_id={}", task.id);
     let meeting_context = MeetingContext::default();
     let built_prompt = build_prompt(PromptBuildRequest {
         transcript: &transcript,
@@ -853,6 +906,10 @@ async fn run_provider_pipeline(
         validation_options: ValidationOptions::default(),
     })
     .map_err(minutes_error)?;
+    info!(
+        "[阶段5/6] 开始调用 LLM 生成会议纪要: task_id={}, timeout_ms={}",
+        task.id, providers.minutes_timeout_ms,
+    );
     update_task(
         repository,
         task,
@@ -867,15 +924,26 @@ async fn run_provider_pipeline(
         token.clone(),
         Duration::from_millis(providers.minutes_timeout_ms),
     );
-    let candidate = providers
+    let candidate_result = providers
         .minutes
         .generate_candidate(
             &minutes_context,
             built_prompt.into_provider_request(),
             providers.minutes_credential.as_deref(),
         )
-        .await
-        .map_err(provider_error)?;
+        .await;
+    match &candidate_result {
+        Ok(_) => info!("LLM 会议纪要生成完成: task_id={}", task.id),
+        Err(e) => log_error!(
+            "LLM 会议纪要生成失败: task_id={}, code={}, message={}",
+            task.id,
+            e.code,
+            e.safe_message,
+        ),
+    }
+    let candidate = candidate_result.map_err(provider_error)?;
+
+    // 阶段 5：校验会议纪要 Schema
     update_task(
         repository,
         task,
@@ -895,6 +963,9 @@ async fn run_provider_pipeline(
     if token.is_cancelled() {
         return Err(cancelled_error());
     }
+
+    // 阶段 6：保存到 SQLite
+    info!("[阶段6/6] 保存会议记录到本地数据库: task_id={}", task.id);
     task.available_actions.clear();
     update_task(
         repository,
@@ -931,6 +1002,11 @@ async fn run_provider_pipeline(
     task.error = None;
     task.available_actions = vec![TaskAction::OpenMeeting];
     task.updated_at = Utc::now().to_rfc3339();
+
+    info!(
+        "处理流水线全部完成: task_id={}, status=completed, meeting_id={:?}",
+        task.id, task.meeting_id,
+    );
     Ok(())
 }
 
@@ -951,7 +1027,32 @@ fn update_task(
     task_gate: &Arc<Mutex<()>>,
     token: &CancellationToken,
 ) -> Result<(), SafeTaskError> {
-    let _task_guard = task_gate.lock().map_err(|_| local_error())?;
+    // 带超时的锁获取，防止 Mutex 死锁导致任务永久卡住
+    let _task_guard = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut guard = None;
+        while std::time::Instant::now() < deadline {
+            if token.is_cancelled() {
+                return Err(cancelled_error());
+            }
+            if let Ok(g) = task_gate.try_lock() {
+                guard = Some(g);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        match guard {
+            Some(g) => g,
+            None => {
+                log_error!(
+                    "task_gate 锁获取超时 (5s)，可能存在死锁: task_id={:?}, target_status={:?}",
+                    task.id,
+                    status,
+                );
+                return Err(local_error());
+            }
+        }
+    };
     if token.is_cancelled() {
         return Err(cancelled_error());
     }

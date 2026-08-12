@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { createMockDesktopClient } from "./services/mockDesktopClient";
 import { useAppStore } from "./stores/appStore";
@@ -48,6 +48,10 @@ describe("Windows 离线媒体工作台", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetAppStore();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("显示听见纪要品牌 Logo", async () => {
@@ -139,6 +143,25 @@ describe("Windows 离线媒体工作台", () => {
 
     await waitFor(() => expect(screen.getAllByText("已取消").length).toBeGreaterThan(0));
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("存在进行中任务时每三秒自动刷新任务队列", async () => {
+    vi.useFakeTimers();
+    const client = createMockDesktopClient();
+    const listTasks = vi.spyOn(client, "listProcessingTasks");
+    render(<App client={client} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "任务队列" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const initialLoadCount = listTasks.mock.calls.length;
+    expect(initialLoadCount).toBeGreaterThan(0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    expect(listTasks).toHaveBeenCalledTimes(initialLoadCount + 1);
   });
 
   it("确认后删除失败任务并从队列移除", async () => {

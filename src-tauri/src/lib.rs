@@ -18,6 +18,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .max_file_size(5_000_000) // 5 MB per file
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .build(),
+        )
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
             let repository = storage::MeetingRepository::open(&data_dir.join("meetings.sqlite3"))?;
