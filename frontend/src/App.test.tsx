@@ -141,6 +141,22 @@ describe("Windows 离线媒体工作台", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
+  it("确认后删除失败任务并从队列移除", async () => {
+    const user = userEvent.setup();
+    render(<App client={createMockDesktopClient()} />);
+    await user.click(screen.getByRole("button", { name: "任务队列" }));
+
+    const failedRow = (await screen.findByText("客户访谈.mp3")).closest("tr");
+    expect(failedRow).not.toBeNull();
+    await user.click(within(failedRow!).getByRole("button", { name: "删除" }));
+
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText(/只会删除任务记录和受管临时文件/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "删除任务" }));
+
+    await waitFor(() => expect(screen.queryByText("客户访谈.mp3")).not.toBeInTheDocument());
+  });
+
   it("打开结构化纪要和完整逐字稿并执行复制", async () => {
     const user = userEvent.setup();
     render(<App client={createMockDesktopClient()} />);

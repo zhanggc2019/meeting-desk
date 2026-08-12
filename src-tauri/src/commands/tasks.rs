@@ -240,6 +240,7 @@ pub fn list_processing_tasks(
     Ok(tasks
         .into_iter()
         .filter(|task| task_matches_filter(task, &query.filter))
+        .map(with_available_delete_action)
         .collect())
 }
 
@@ -357,6 +358,27 @@ pub fn retry_processing_task(
     state.repository.save_task(&task)?;
     start_task(&state, task.clone(), artifact, providers)?;
     Ok(task)
+}
+
+/// 删除失败或中断的任务，并尽力清理不再被引用的受管音频副本。
+#[tauri::command]
+pub fn delete_processing_task(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<bool, CommandError> {
+    let _task_gate = state
+        .task_gate
+        .lock()
+        .map_err(|_| CommandError::new("task_state_unavailable", "任务状态不可用", true))?;
+    let artifact_id = delete_task_record(&state.repository, &task_id)?;
+    if let Some(artifact_id) = artifact_id {
+        if let Ok(mut cancellations) = state.cancellations.lock() {
+            cancellations.remove(&task_id);
+        }
+        cleanup_unused_artifact(&state, &artifact_id);
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// 通过受信任系统文件对话框重新选择媒体，并把新 artifact 绑定到原中断任务。
@@ -952,6 +974,36 @@ fn task_matches_filter(task: &TaskRecord, filter: &str) -> bool {
     }
 }
 
+/// 判断任务是否可独立删除，避免绕过会议记录的级联删除流程。
+fn task_can_be_deleted(task: &TaskRecord) -> bool {
+    task.meeting_id.is_none() && matches!(task.status, TaskStatus::Failed | TaskStatus::Interrupted)
+}
+
+/// 校验并删除任务快照，成功时返回需要尝试清理的受管 artifact ID。
+fn delete_task_record(
+    repository: &MeetingRepository,
+    task_id: &str,
+) -> Result<Option<String>, CommandError> {
+    let task = find_task(repository, task_id)?;
+    if !task_can_be_deleted(&task) {
+        return Err(CommandError::new(
+            "task_not_deletable",
+            "仅允许删除未生成会议记录的失败任务",
+            false,
+        ));
+    }
+    let deleted = repository.delete_task(task_id)?;
+    Ok(deleted.then_some(task.artifact_id))
+}
+
+/// 为旧版持久化的失败任务补充删除动作，不改写数据库历史快照。
+fn with_available_delete_action(mut task: TaskRecord) -> TaskRecord {
+    if task_can_be_deleted(&task) && !task.available_actions.contains(&TaskAction::Delete) {
+        task.available_actions.push(TaskAction::Delete);
+    }
+    task
+}
+
 /// 从 SQLite 快照中查找任务。
 fn find_task(repository: &MeetingRepository, task_id: &str) -> Result<TaskRecord, CommandError> {
     repository
@@ -1205,6 +1257,44 @@ mod tests {
 
         task.available_actions.clear();
         assert!(!task.retains_audio_artifact());
+    }
+
+    /// 验证只有未关联会议的失败或中断任务可由队列独立删除。
+    #[test]
+    fn delete_action_is_limited_to_failed_tasks_without_meetings() {
+        let artifact = registered_artifact("deletable", 60);
+        let mut task = new_task(&artifact, None, "standard_meeting", 3);
+        task.status = TaskStatus::Failed;
+        assert!(task_can_be_deleted(&task));
+        assert!(with_available_delete_action(task.clone())
+            .available_actions
+            .contains(&TaskAction::Delete));
+
+        task.status = TaskStatus::Completed;
+        assert!(!task_can_be_deleted(&task));
+        task.status = TaskStatus::Failed;
+        task.meeting_id = Some("meeting-protected".to_string());
+        assert!(!task_can_be_deleted(&task));
+    }
+
+    /// 验证后端删除函数拒绝活动任务，并实际移除失败任务快照。
+    #[test]
+    fn deletes_only_failed_task_records() {
+        let repository = MeetingRepository::in_memory().expect("create repository");
+        let artifact = registered_artifact("delete-record", 60);
+        let mut task = new_task(&artifact, None, "standard_meeting", 3);
+        repository.save_task(&task).expect("save active task");
+
+        let error = delete_task_record(&repository, &task.id).expect_err("reject active task");
+        assert_eq!(error.code, "task_not_deletable");
+
+        task.status = TaskStatus::Failed;
+        repository.save_task(&task).expect("save failed task");
+        assert_eq!(
+            delete_task_record(&repository, &task.id).expect("delete failed task"),
+            Some(artifact.id)
+        );
+        assert!(repository.list_tasks().expect("list tasks").is_empty());
     }
 
     /// 验证真实导入模块、MockProvider、纪要校验和 SQLite 保存形成完整闭环。

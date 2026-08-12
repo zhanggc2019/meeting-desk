@@ -176,6 +176,14 @@ impl MeetingRepository {
         Ok(tasks)
     }
 
+    /// 按 ID 删除单条任务快照，不影响会议记录或用户原始文件。
+    pub fn delete_task(&self, id: &str) -> Result<bool, StorageError> {
+        Ok(self
+            .lock()?
+            .execute("DELETE FROM tasks WHERE id = ?1", [id])?
+            > 0)
+    }
+
     /// 搜索会议标题和源文件名；空查询返回全部历史。
     pub fn search_meetings(&self, query: &str) -> Result<Vec<MeetingListItem>, StorageError> {
         let pattern = format!("%{}%", query.trim().replace('%', "\\%").replace('_', "\\_"));
@@ -332,6 +340,21 @@ mod tests {
             processing_duration_ms: Some(0),
             available_actions: vec![TaskAction::Cancel],
         }
+    }
+
+    /// 验证任务可按 ID 删除，且重复删除不会误报成功。
+    #[test]
+    fn deletes_task_by_id() {
+        let repository = MeetingRepository::in_memory().expect("create database");
+        repository
+            .save_task(&task_fixture("failed-task"))
+            .expect("save task");
+
+        assert!(repository.delete_task("failed-task").expect("delete task"));
+        assert!(repository.list_tasks().expect("list tasks").is_empty());
+        assert!(!repository
+            .delete_task("failed-task")
+            .expect("delete missing task"));
     }
 
     /// 验证会议保存、查询和删除使用同一事务事实源。

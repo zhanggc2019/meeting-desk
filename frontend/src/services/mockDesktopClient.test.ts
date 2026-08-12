@@ -168,6 +168,18 @@ describe("浏览器测试 DesktopClient", () => {
     expect(candidates.filter((candidate) => candidate.artifactId)).toHaveLength(2);
   });
 
+  it("删除失败任务后不会继续出现在队列中", async () => {
+    const client = createMockDesktopClient();
+    const failed = (await client.listProcessingTasks({ filter: "failed" }))[0];
+    expect(failed?.availableActions).toContain("delete");
+
+    await expect(client.deleteProcessingTask(failed!.id)).resolves.toBe(true);
+    await expect(client.listProcessingTasks({ filter: "failed" })).resolves.not.toContainEqual(
+      expect.objectContaining({ id: failed!.id }),
+    );
+    await expect(client.deleteProcessingTask(failed!.id)).resolves.toBe(false);
+  });
+
   it("返回完整模板注册表和 Markdown 预览", async () => {
     const client = createMockDesktopClient();
     const registry = await client.listMinutesTemplates();

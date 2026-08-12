@@ -75,9 +75,9 @@ jobs:
           tagName: v__VERSION__
           releaseName: 听见纪要 v__VERSION__
           releaseBody: |
-            - 新增“听见纪要”原创应用 Logo，并统一用于窗口、安装器、可执行文件与网页图标。
-            - Windows 内部产品名调整为 `MeetingDesk`，新安装默认使用英文目录，中文界面名称保持不变。
-            - 保留 Xiaomi MiMo 与火山引擎离线文件 ASR 支持。
+            - 失败和中断的任务现在可以从任务队列中删除。
+            - 删除任务时同步清理不再使用的受管临时文件，不会删除用户原始文件。
+            - 继续内置本地 FunASR Python 运行时，模型文件仍由用户单独放置或选择。
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true

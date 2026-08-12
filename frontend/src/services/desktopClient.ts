@@ -20,6 +20,7 @@ export const DESKTOP_COMMANDS = {
   listProcessingTasks: "list_processing_tasks",
   cancelProcessingTask: "cancel_processing_task",
   retryProcessingTask: "retry_processing_task",
+  deleteProcessingTask: "delete_processing_task",
   reselectProcessingTask: "reselect_processing_task",
   listMeetings: "list_meetings",
   getMeetingDetail: "get_meeting_detail",
@@ -50,6 +51,8 @@ export interface DesktopClient {
   cancelProcessingTask(taskId: string): Promise<ProcessingTask>;
   /** 请求重试后端明确允许重试的任务。 */
   retryProcessingTask(taskId: string): Promise<ProcessingTask>;
+  /** 删除失败任务及不再使用的受管临时文件。 */
+  deleteProcessingTask(taskId: string): Promise<boolean>;
   /** 通过系统文件对话框重新选择音频并续接中断任务。 */
   reselectProcessingTask(taskId: string): Promise<ProcessingTask>;
   /** 仅在本地会议仓库中搜索会议。 */
@@ -118,6 +121,9 @@ export function createTauriDesktopClient(): DesktopClient {
     },
     async retryProcessingTask(taskId) {
       return invoke<ProcessingTask>(DESKTOP_COMMANDS.retryProcessingTask, { taskId });
+    },
+    async deleteProcessingTask(taskId) {
+      return invoke<boolean>(DESKTOP_COMMANDS.deleteProcessingTask, { taskId });
     },
     async reselectProcessingTask(taskId) {
       return invoke<ProcessingTask>(DESKTOP_COMMANDS.reselectProcessingTask, { taskId });

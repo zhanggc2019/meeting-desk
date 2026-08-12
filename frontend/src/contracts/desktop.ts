@@ -44,7 +44,7 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
-export type TaskAction = "cancel" | "retry" | "openMeeting" | "reselectFile";
+export type TaskAction = "cancel" | "retry" | "delete" | "openMeeting" | "reselectFile";
 
 export interface TaskError {
   code: string;

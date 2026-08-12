@@ -34,6 +34,7 @@ impl TaskStatus {
 pub enum TaskAction {
     Cancel,
     Retry,
+    Delete,
     OpenMeeting,
     ReselectFile,
 }

@@ -112,7 +112,7 @@ const initialTasks: ProcessingTask[] = [
     processingStartedAt: null,
     processingDurationMs: 1_200_000,
     error: { code: "network_unavailable", safeMessage: "网络不可用，请检查连接后重试", retryable: true },
-    availableActions: ["retry"],
+    availableActions: ["retry", "delete"],
   },
   {
     id: "task-complete-1",
@@ -349,6 +349,16 @@ export function createMockDesktopClient(): DesktopClient {
       task.availableActions = ["cancel"];
       task.updatedAt = new Date().toISOString();
       return structuredClone(task);
+    },
+    async deleteProcessingTask(taskId) {
+      const task = tasks.find((item) => item.id === taskId);
+      if (!task) return false;
+      if (!task.availableActions.includes("delete")) {
+        throw new Error("该任务当前不能删除");
+      }
+      tasks = tasks.filter((item) => item.id !== taskId);
+      artifactNames.delete(task.artifactId);
+      return true;
     },
     async reselectProcessingTask(taskId) {
       const task = tasks.find((item) => item.id === taskId);

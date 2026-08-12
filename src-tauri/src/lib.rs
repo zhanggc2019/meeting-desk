@@ -63,6 +63,7 @@ pub fn run() {
             commands::tasks::list_processing_tasks,
             commands::tasks::cancel_processing_task,
             commands::tasks::retry_processing_task,
+            commands::tasks::delete_processing_task,
             commands::tasks::reselect_processing_task,
         ])
         .run(tauri::generate_context!())

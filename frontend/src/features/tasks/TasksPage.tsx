@@ -1,4 +1,4 @@
-import { ArrowRight, FileAudio, RefreshCw, RotateCcw, SlidersHorizontal, XCircle } from "lucide-react";
+import { ArrowRight, FileAudio, RefreshCw, RotateCcw, SlidersHorizontal, Trash2, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import type { ProcessingTask, TaskQuery } from "../../contracts/desktop";
@@ -36,6 +36,7 @@ export function TasksPage() {
   const [tasks, setTasks] = useState<ProcessingTask[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [cancelTaskId, setCancelTaskId] = useState<string | null>(null);
+  const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -86,6 +87,22 @@ export function TasksPage() {
     setError(null);
     try {
       await client.retryProcessingTask(taskId);
+      await loadTasks();
+    } catch (reason) {
+      setError(getSafeErrorMessage(reason));
+    } finally {
+      setBusyTaskId(null);
+    }
+  }
+
+  /** 确认删除失败任务及其不再被引用的受管临时文件。 */
+  async function confirmDeleteTask() {
+    if (!deleteTaskId || busyTaskId) return;
+    setBusyTaskId(deleteTaskId);
+    setError(null);
+    try {
+      await client.deleteProcessingTask(deleteTaskId);
+      setDeleteTaskId(null);
       await loadTasks();
     } catch (reason) {
       setError(getSafeErrorMessage(reason));
@@ -159,6 +176,7 @@ export function TasksPage() {
                       <td className="cell-actions">
                         {task.availableActions.includes("cancel") ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); setCancelTaskId(task.id); }} disabled={busyTaskId === task.id}>取消</button> : null}
                         {task.availableActions.includes("retry") ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); void retryTask(task.id); }} disabled={busyTaskId === task.id}><RotateCcw size={14} aria-hidden="true" />重试</button> : null}
+                        {task.availableActions.includes("delete") ? <button className="button table-action danger" type="button" onClick={(event) => { event.stopPropagation(); setDeleteTaskId(task.id); }} disabled={busyTaskId === task.id}><Trash2 size={14} aria-hidden="true" />删除</button> : null}
                         {task.availableActions.includes("reselectFile") ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); void reselectTaskAudio(task.id); }} disabled={busyTaskId === task.id}>重新选择</button> : null}
                         {task.availableActions.includes("openMeeting") && task.meetingId ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); openMeeting(task.meetingId!); }}>查看</button> : null}
                       </td>
@@ -181,6 +199,15 @@ export function TasksPage() {
         busy={busyTaskId === cancelTaskId}
         onCancel={() => setCancelTaskId(null)}
         onConfirm={() => void confirmCancelTask()}
+      />
+      <ConfirmDialog
+        open={deleteTaskId !== null}
+        title="删除失败任务？"
+        description="只会删除任务记录和受管临时文件，不会删除你导入的原始文件。"
+        confirmLabel="删除任务"
+        busy={busyTaskId === deleteTaskId}
+        onCancel={() => setDeleteTaskId(null)}
+        onConfirm={() => void confirmDeleteTask()}
       />
     </div>
   );
