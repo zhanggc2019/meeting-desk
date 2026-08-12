@@ -23,6 +23,12 @@ const APP_DATA_DIRECTORY: &str = "com.internal.meetingdesk";
 const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.yaml", "model.pt", "tokens.json"];
 
+/// 返回 Windows `CREATE_NO_WINDOW` 标志，避免本地 Python 推理弹出终端窗口。
+#[cfg(windows)]
+const fn windows_subprocess_creation_flags() -> u32 {
+    0x0800_0000
+}
+
 /// Non-secret paths and model identity required by the local FunASR adapter.
 #[derive(Clone)]
 pub struct LocalFunAsrConfig {
@@ -268,7 +274,8 @@ impl LocalFunAsrProvider {
         if timeout.is_zero() {
             return Err(local_timeout_error());
         }
-        let mut child = Command::new(&self.config.python_executable)
+        let mut command = Command::new(&self.config.python_executable);
+        command
             .arg(&self.config.script_path)
             .args(args)
             .env("PYTHONUTF8", "1")
@@ -277,14 +284,15 @@ impl LocalFunAsrProvider {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|_| {
-                local_configuration_error(
-                    "local_funasr_python_missing",
-                    "内置 FunASR 运行环境缺失，请重新安装应用",
-                )
-            })?;
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(windows_subprocess_creation_flags());
+        let mut child = command.spawn().map_err(|_| {
+            local_configuration_error(
+                "local_funasr_python_missing",
+                "内置 FunASR 运行环境缺失，请重新安装应用",
+            )
+        })?;
         let status = tokio::select! {
             _ = token.cancelled() => {
                 let _ = child.kill().await;
@@ -754,6 +762,13 @@ if not a.check:
         assert_eq!(transcript.text, "local transcript");
         assert_eq!(transcript.provider_metadata.provider_id, "local_funasr");
         assert!(!format!("{transcript:?}").contains("local transcript"));
+    }
+
+    /// 验证 Windows 本地推理子进程使用禁止创建控制台窗口的启动标志。
+    #[cfg(windows)]
+    #[test]
+    fn subprocess_uses_no_window_creation_flag() {
+        assert_eq!(windows_subprocess_creation_flags(), 0x0800_0000);
     }
 
     /// Verifies missing model files fail before starting Python.

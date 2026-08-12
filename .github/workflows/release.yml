@@ -77,6 +77,7 @@ jobs:
           releaseBody: |
             - 失败和中断的任务现在可以从任务队列中删除。
             - 删除任务时同步清理不再使用的受管临时文件，不会删除用户原始文件。
+            - 修复本地 FunASR 转写时弹出终端窗口的问题。
             - 继续内置本地 FunASR Python 运行时，模型文件仍由用户单独放置或选择。
           releaseDraft: false
           prerelease: false
