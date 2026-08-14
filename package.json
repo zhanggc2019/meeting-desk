@@ -1,7 +1,7 @@
 {
   "name": "meeting-desk",
   "private": true,
-  "version": "0.3.4",
+  "version": "0.3.5",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:integration": "cargo test --manifest-path src-tauri/Cargo.toml commands::tasks::tests::mock_pipeline_persists_transcript_and_minutes",
+    "test:python": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& '.\\src-tauri\\runtime\\python\\python.exe' '.\\src-tauri\\python\\test_local_funasr.py'\"",
     "test:watch": "vitest",
     "runtime:prepare": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\prepare-python-runtime.ps1",
     "runtime:check": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\prepare-python-runtime.ps1 -CheckOnly",

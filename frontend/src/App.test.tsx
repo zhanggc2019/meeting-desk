@@ -73,6 +73,8 @@ describe("Windows 离线媒体工作台", () => {
     expect(screen.getByRole("button", { name: "帮助" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "帮助" }));
     expect(screen.getByRole("heading", { name: "使用帮助" })).toBeInTheDocument();
+    expect(screen.getByText(/同级 fsmn-vad/)).toBeInTheDocument();
+    expect(screen.getByText(/最长 30 秒/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "关闭帮助" }));
 
     await user.click(screen.getByRole("button", { name: "关于" }));
@@ -311,8 +313,9 @@ describe("Windows 离线媒体工作台", () => {
 
     const transcriptionSection = await screen.findByRole("region", { name: "本地 ASR 模型" });
     expect(within(transcriptionSection).getByText(/%LOCALAPPDATA%\\com\.internal\.meetingdesk\\model\\SenseVoiceSmall/)).toBeInTheDocument();
+    expect(within(transcriptionSection).getByText(/%LOCALAPPDATA%\\com\.internal\.meetingdesk\\model\\fsmn-vad/)).toBeInTheDocument();
     expect(within(transcriptionSection).getByText(/下载完成后，将完整的 SenseVoiceSmall 文件夹放到/)).toBeInTheDocument();
-    expect(within(transcriptionSection).getByText(/检查通过后，软件默认使用该本地模型转写/)).toBeInTheDocument();
+    expect(within(transcriptionSection).getByText(/最长 30 秒的语音段/)).toBeInTheDocument();
     expect(within(transcriptionSection).getByRole("button", { name: "检查环境" })).toBeInTheDocument();
     expect(within(transcriptionSection).queryByText(/下载来源/)).not.toBeInTheDocument();
     expect(within(transcriptionSection).queryByRole("button", { name: "复制模型下载命令" })).not.toBeInTheDocument();

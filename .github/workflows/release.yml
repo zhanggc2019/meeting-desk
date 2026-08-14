@@ -62,6 +62,7 @@ jobs:
         run: |
           pnpm typecheck
           pnpm test
+          pnpm test:python
           cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
           cargo test --manifest-path src-tauri/Cargo.toml --all-targets --all-features
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
@@ -75,9 +76,8 @@ jobs:
           tagName: v__VERSION__
           releaseName: 听见纪要 v__VERSION__
           releaseBody: |
-            - 将本地 ASR 模型与纪要生成大模型拆分为独立设置分类，分别管理和检查。
-            - 左上角新增帮助与关于窗口，关于窗口显示当前版本并支持手动检查、下载和安装更新。
-            - 优化设置窗口在常用桌面尺寸和最小窗口下的布局，同时保留听见纪要品牌 Logo。
+            - 新增本地 FSMN-VAD 模型支持，长录音会切成最长 30 秒的语音段后再转写，避免整段推理耗尽内存和分页文件。
+            - 设置与帮助页面说明两个模型的放置位置；选择 SenseVoiceSmall 后会自动查找同级 fsmn-vad，“检查环境”会同时验证并加载两个模型。
             - 继续内置本地 FunASR Python 运行时；模型文件由用户单独下载后放置或选择，不包含在安装包和升级包中。
           releaseDraft: false
           prerelease: false

@@ -43,7 +43,7 @@ const TRANSCRIPTION_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
     models: [
       { value: "SenseVoiceSmall", label: "SenseVoiceSmall" },
     ],
-    description: "从 model/SenseVoiceSmall 加载模型并在本机 CPU 完成转写。",
+    description: "从同级 SenseVoiceSmall 与 fsmn-vad 目录加载模型并在本机 CPU 完成转写。",
   },
 ];
 
@@ -457,12 +457,13 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
           <div className="local-model-guide full-field" role="note">
             <div className="local-model-guide-header">
               <div>
-                <strong>放置 SenseVoiceSmall 模型</strong>
+                <strong>放置 SenseVoiceSmall 与 fsmn-vad 模型</strong>
               </div>
             </div>
             <p>下载完成后，将完整的 SenseVoiceSmall 文件夹放到 <code>%LOCALAPPDATA%\com.internal.meetingdesk\model\SenseVoiceSmall</code>。</p>
-            <p>也可以在下方直接选择已有模型目录，无需复制。目录中至少应有 <code>config.yaml</code>、<code>model.pt</code> 和 <code>tokens.json</code>。</p>
-            <p>放置或选择模型后，点击“检查环境”；检查通过后，软件默认使用该本地模型转写。</p>
+            <p>将完整的 fsmn-vad 文件夹放到 <code>%LOCALAPPDATA%\com.internal.meetingdesk\model\fsmn-vad</code>，与 SenseVoiceSmall 保持同级。</p>
+            <p>也可以在下方直接选择已有 SenseVoiceSmall 目录，无需复制；软件会自动查找其同级 fsmn-vad，并将长录音切成最长 30 秒的语音段。</p>
+            <p>放置或选择模型后，点击“检查环境”；检查通过后，软件默认使用这两个本地模型转写。</p>
           </div>
         ) : null}
 
@@ -485,7 +486,7 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
                 </button>
               ) : null}
             </span>
-            <small className="field-help">请选择直接包含 config.yaml、model.pt 和 tokens.json 的 SenseVoiceSmall 文件夹。</small>
+            <small className="field-help">请选择直接包含 config.yaml、model.pt 和 tokens.json 的 SenseVoiceSmall 文件夹，并确保同级存在 fsmn-vad。</small>
             {modelPathError ? <span className="copy-status error" role="alert">{modelPathError}</span> : null}
           </label>
         ) : null}

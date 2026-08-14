@@ -173,10 +173,11 @@ pub async fn test_provider_connection(
             (!provider.local_model_path.trim().is_empty())
                 .then(|| provider.local_model_path.clone().into()),
         );
-        return Ok(match local.check_runtime(Duration::from_secs(30)).await {
+        return Ok(match local.check_runtime(Duration::from_secs(120)).await {
             Ok(()) => ProviderConnectionResult {
                 ok: true,
-                safe_message: "本地 SenseVoiceSmall 模型与 FunASR 运行环境可用".to_string(),
+                safe_message: "本地 SenseVoiceSmall、FSMN-VAD 模型与 FunASR 运行环境可用"
+                    .to_string(),
             },
             Err(error) => ProviderConnectionResult {
                 ok: false,
@@ -842,6 +843,11 @@ mod tests {
         std::fs::create_dir_all(&model_dir).expect("model directory");
         for file_name in ["config.yaml", "model.pt", "tokens.json"] {
             std::fs::write(model_dir.join(file_name), b"fixture").expect("model file");
+        }
+        let vad_model_dir = fixture.path().join("fsmn-vad");
+        std::fs::create_dir_all(&vad_model_dir).expect("VAD model directory");
+        for file_name in ["config.yaml", "configuration.json", "model.pt", "am.mvn"] {
+            std::fs::write(vad_model_dir.join(file_name), b"fixture").expect("VAD model file");
         }
         let mut input = valid_input();
         input.preset_id = config::PRESET_LOCAL_FUNASR.to_string();

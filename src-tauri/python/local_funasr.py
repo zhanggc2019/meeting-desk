@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--model-dir", type=Path)
+    parser.add_argument("--vad-model-dir", type=Path)
     parser.add_argument("--audio", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--language", default="auto")
@@ -56,10 +57,16 @@ def write_result(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-def load_model(auto_model: Any, model_dir: Path | str) -> Any:
-    """Load SenseVoice from the selected local directory using offline CPU settings."""
+def load_model(
+    auto_model: Any,
+    model_dir: Path | str,
+    vad_model_dir: Path | str,
+) -> Any:
+    """Load local SenseVoice and VAD models with bounded speech segments."""
     return auto_model(
         model=str(model_dir),
+        vad_model=str(vad_model_dir),
+        vad_kwargs={"max_single_segment_time": 30_000},
         device="cpu",
         disable_update=True,
         trust_remote_code=False,
@@ -74,10 +81,10 @@ def main() -> int:
         from funasr.utils.postprocess_utils import rich_transcription_postprocess
     except Exception:
         return 20
-    if args.model_dir is None:
+    if args.model_dir is None or args.vad_model_dir is None:
         return 23
     try:
-        model = load_model(AutoModel, args.model_dir)
+        model = load_model(AutoModel, args.model_dir, args.vad_model_dir)
     except Exception:
         return 21
     if args.check:

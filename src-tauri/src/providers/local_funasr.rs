@@ -18,10 +18,13 @@ use super::{
 };
 
 const ADAPTER_ID: &str = "local_funasr_python";
-const ADAPTER_VERSION: &str = "1";
+const ADAPTER_VERSION: &str = "2";
 const APP_DATA_DIRECTORY: &str = "com.internal.meetingdesk";
 const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.yaml", "model.pt", "tokens.json"];
+const VAD_MODEL_DIRECTORY_NAME: &str = "fsmn-vad";
+const REQUIRED_VAD_MODEL_FILES: [&str; 4] =
+    ["config.yaml", "configuration.json", "model.pt", "am.mvn"];
 
 /// 返回 Windows `CREATE_NO_WINDOW` 标志，避免本地 Python 推理弹出终端窗口。
 #[cfg(windows)]
@@ -35,6 +38,7 @@ pub struct LocalFunAsrConfig {
     python_executable: OsString,
     script_path: PathBuf,
     model_dir: PathBuf,
+    vad_model_dir: PathBuf,
     model_name: String,
 }
 
@@ -46,6 +50,7 @@ impl fmt::Debug for LocalFunAsrConfig {
             .field("python_executable", &"[LOCAL]")
             .field("script_path", &"[LOCAL]")
             .field("model_dir", &"[LOCAL]")
+            .field("vad_model_dir", &"[LOCAL]")
             .field("model_name", &self.model_name)
             .finish()
     }
@@ -156,7 +161,7 @@ impl LocalFunAsrProvider {
         Self::from_paths(python_executable, script_path, model_dir, model_name)
     }
 
-    /// Validates a SenseVoiceSmall directory without exposing its absolute path in errors.
+    /// Validates sibling SenseVoiceSmall and FSMN-VAD directories without exposing paths.
     pub(crate) fn validate_model_directory(model_dir: &Path) -> Result<(), ProviderError> {
         if !model_dir.is_dir() {
             return Err(local_configuration_error(
@@ -177,6 +182,26 @@ impl LocalFunAsrProvider {
                 ));
             }
         }
+        let vad_model_dir = vad_model_directory(model_dir);
+        if !vad_model_dir.is_dir() {
+            return Err(local_configuration_error(
+                "local_funasr_vad_model_missing",
+                "缺少同级 fsmn-vad 模型目录，请将其放在 SenseVoiceSmall 旁边",
+            ));
+        }
+        for file_name in REQUIRED_VAD_MODEL_FILES {
+            let valid = vad_model_dir
+                .join(file_name)
+                .metadata()
+                .map(|metadata| metadata.is_file() && metadata.len() > 0)
+                .unwrap_or(false);
+            if !valid {
+                return Err(local_configuration_error(
+                    "local_funasr_vad_model_incomplete",
+                    "fsmn-vad 模型目录不完整，需要包含 config.yaml、configuration.json、model.pt 和 am.mvn",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -187,11 +212,14 @@ impl LocalFunAsrProvider {
         model_dir: impl Into<PathBuf>,
         model_name: impl Into<String>,
     ) -> Self {
+        let model_dir = model_dir.into();
+        let vad_model_dir = vad_model_directory(&model_dir);
         Self {
             config: LocalFunAsrConfig {
                 python_executable: python_executable.into(),
                 script_path: script_path.into(),
-                model_dir: model_dir.into(),
+                model_dir,
+                vad_model_dir,
                 model_name: model_name.into(),
             },
         }
@@ -205,6 +233,8 @@ impl LocalFunAsrProvider {
             OsString::from("--check"),
             OsString::from("--model-dir"),
             self.config.model_dir.as_os_str().to_owned(),
+            OsString::from("--vad-model-dir"),
+            self.config.vad_model_dir.as_os_str().to_owned(),
         ];
         self.run_process(&args, &token, timeout, "local_runtime_check_failed")
             .await
@@ -316,7 +346,7 @@ impl LocalFunAsrProvider {
             ),
             Some(21) => local_configuration_error(
                 "local_funasr_model_load_failed",
-                "本地 SenseVoiceSmall 模型加载失败，请检查模型文件",
+                "本地 SenseVoiceSmall 或 FSMN-VAD 模型加载失败，请检查模型文件",
             ),
             Some(22) => ProviderError::input(
                 "local_audio_decode_failed",
@@ -442,6 +472,8 @@ impl TranscriptionProvider for LocalFunAsrProvider {
         let args = vec![
             OsString::from("--model-dir"),
             self.config.model_dir.as_os_str().to_owned(),
+            OsString::from("--vad-model-dir"),
+            self.config.vad_model_dir.as_os_str().to_owned(),
             OsString::from("--audio"),
             audio_path.as_os_str().to_owned(),
             OsString::from("--output"),
@@ -509,6 +541,14 @@ fn environment_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+/// Resolves the fixed FSMN-VAD directory beside the selected SenseVoice model.
+fn vad_model_directory(model_dir: &Path) -> PathBuf {
+    model_dir
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(VAD_MODEL_DIRECTORY_NAME)
 }
 
 /// Selects the first existing candidate, falling back deterministically when none exist.
@@ -593,12 +633,27 @@ mod tests {
     use crate::ingest::{AudioArtifactRef, AudioSourceKind, StagingMetadata};
     use crate::providers::{ManagedAudioArtifact, TranscriptionOptions};
 
-    /// Creates the minimum valid model marker files used by subprocess tests.
-    fn create_model_fixture(root: &Path) {
+    /// Creates the minimum valid SenseVoice marker files used by subprocess tests.
+    fn create_sensevoice_model_fixture(root: &Path) {
         fs::create_dir_all(root).expect("model fixture directory");
         for name in REQUIRED_MODEL_FILES {
             fs::write(root.join(name), b"fixture").expect("model fixture file");
         }
+    }
+
+    /// Creates the minimum local FSMN-VAD files expected beside SenseVoiceSmall.
+    fn create_vad_model_fixture(model_dir: &Path) {
+        let vad_dir = model_dir.parent().expect("model parent").join("fsmn-vad");
+        fs::create_dir_all(&vad_dir).expect("VAD fixture directory");
+        for name in ["config.yaml", "configuration.json", "model.pt", "am.mvn"] {
+            fs::write(vad_dir.join(name), b"fixture").expect("VAD fixture file");
+        }
+    }
+
+    /// Creates a complete local ASR bundle with sibling recognition and VAD models.
+    fn create_model_fixture(root: &Path) {
+        create_sensevoice_model_fixture(root);
+        create_vad_model_fixture(root);
     }
 
     /// Creates a managed audio request without exposing its source path to the provider DTO.
@@ -691,7 +746,7 @@ mod tests {
 
     /// Verifies the runtime check passes the validated model directory to Python for loading.
     #[tokio::test]
-    async fn runtime_check_passes_model_directory() {
+    async fn runtime_check_passes_asr_and_vad_model_directories() {
         let fixture = tempfile::tempdir().expect("fixture directory");
         let model_dir = fixture.path().join("model");
         create_model_fixture(&model_dir);
@@ -702,10 +757,15 @@ mod tests {
 p = argparse.ArgumentParser()
 p.add_argument('--check', action='store_true', required=True)
 p.add_argument('--model-dir', required=True)
+p.add_argument('--vad-model-dir', required=True)
 a = p.parse_args()
 model_dir = pathlib.Path(a.model_dir)
-required = ('config.yaml', 'model.pt', 'tokens.json')
-raise SystemExit(0 if a.check and all((model_dir / name).is_file() for name in required) else 2)
+vad_dir = pathlib.Path(a.vad_model_dir)
+asr_required = ('config.yaml', 'model.pt', 'tokens.json')
+vad_required = ('config.yaml', 'configuration.json', 'model.pt', 'am.mvn')
+valid = all((model_dir / name).is_file() for name in asr_required)
+valid = valid and all((vad_dir / name).is_file() for name in vad_required)
+raise SystemExit(0 if a.check and valid else 2)
 "#,
         )
         .expect("script fixture");
@@ -732,6 +792,7 @@ raise SystemExit(0 if a.check and all((model_dir / name).is_file() for name in r
             r#"import argparse, json
 p = argparse.ArgumentParser()
 p.add_argument('--model-dir')
+p.add_argument('--vad-model-dir')
 p.add_argument('--audio')
 p.add_argument('--output')
 p.add_argument('--language')
@@ -761,6 +822,7 @@ if not a.check:
             .expect("local subprocess transcript");
         assert_eq!(transcript.text, "local transcript");
         assert_eq!(transcript.provider_metadata.provider_id, "local_funasr");
+        assert_eq!(transcript.provider_metadata.adapter_version, "2");
         assert!(!format!("{transcript:?}").contains("local transcript"));
     }
 
@@ -789,6 +851,23 @@ if not a.check:
             .expect_err("missing model must fail");
         assert_eq!(error.code, "local_funasr_model_missing");
         assert!(error.safe_message.contains("模型目录"));
+        assert!(!error
+            .safe_message
+            .contains(fixture.path().to_string_lossy().as_ref()));
+    }
+
+    /// Verifies a valid SenseVoice directory is rejected until its sibling VAD model exists.
+    #[test]
+    fn missing_vad_model_is_a_sanitized_configuration_error() {
+        let fixture = tempfile::tempdir().expect("fixture directory");
+        let model_dir = fixture.path().join("SenseVoiceSmall");
+        create_sensevoice_model_fixture(&model_dir);
+
+        let error = LocalFunAsrProvider::validate_model_directory(&model_dir)
+            .expect_err("missing sibling VAD model must fail");
+
+        assert_eq!(error.code, "local_funasr_vad_model_missing");
+        assert!(error.safe_message.contains("fsmn-vad"));
         assert!(!error
             .safe_message
             .contains(fixture.path().to_string_lossy().as_ref()));

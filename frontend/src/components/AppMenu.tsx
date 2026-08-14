@@ -105,7 +105,7 @@ function HelpDialog({ open, onClose }: HelpDialogProps) {
       <div className="help-topics">
         <section className="help-topic" aria-labelledby="help-asr-title">
           <FolderCog size={18} aria-hidden="true" />
-          <div><h3 id="help-asr-title">本地 ASR 模型</h3><p>在“设置 → 本地 ASR”选择直接包含 <code>config.yaml</code>、<code>model.pt</code> 和 <code>tokens.json</code> 的模型目录，然后执行“检查环境”。</p></div>
+          <div><h3 id="help-asr-title">本地 ASR 模型</h3><p>在“设置 → 本地 ASR”选择 SenseVoiceSmall 模型目录，并准备同级 fsmn-vad 模型目录。执行“检查环境”后，长录音会切成最长 30 秒的语音段再转写。</p></div>
         </section>
         <section className="help-topic" aria-labelledby="help-llm-title">
           <Bot size={18} aria-hidden="true" />
