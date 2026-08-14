@@ -1,6 +1,5 @@
 use std::{path::Path, time::Duration};
 
-use reqwest::{redirect::Policy, StatusCode};
 use serde::Deserialize;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
@@ -9,10 +8,16 @@ use crate::app_state::AppState;
 use crate::commands::CommandError;
 use crate::config;
 use crate::domain::{PublicProviderConfig, PublicSettings};
-use crate::providers::LocalFunAsrProvider;
+use crate::providers::{
+    build_minutes_provider, CancellationToken, LocalFunAsrProvider, MinutesGenerationRequest,
+    MinutesProvider, ProviderCallContext, ProviderCredential, ProviderError, ProviderErrorCategory,
+};
 use crate::secrets::{self, SecretKind};
 
 const SETTINGS_KEY: &str = "provider_settings_v1";
+const CONNECTION_TEST_PROMPT: &str =
+    "这是连接测试，不含用户数据。请只返回一个 JSON 对象：{\"ok\":true}";
+const CONNECTION_TEST_SCHEMA_VERSION: &str = "connection-test-v1";
 
 /// 接收单个 Provider 的配置；Key 只用于写入系统凭据管理器。
 #[derive(Deserialize)]
@@ -149,16 +154,25 @@ pub fn delete_provider_secret(
     Ok(true)
 }
 
-/// 使用不含会议正文的无副作用请求检查服务地址可达性和常见认证错误。
+/// 使用不含用户数据的最小请求验证地址、凭据、模型和纪要接口，允许测试尚未保存的草稿配置。
 #[tauri::command]
 pub async fn test_provider_connection(
     state: State<'_, AppState>,
     target: String,
+    input: Option<ProviderSettingsInput>,
 ) -> Result<ProviderConnectionResult, CommandError> {
     let settings = load_evaluated_settings(state.inner())?;
-    let (provider, secret_kind) = match target.as_str() {
-        "transcription" => (settings.transcription, SecretKind::Transcription),
-        "minutes" => (settings.minutes, SecretKind::Minutes),
+    let (saved_provider, provider_target, secret_kind) = match target.as_str() {
+        "transcription" => (
+            settings.transcription,
+            ProviderTarget::Transcription,
+            SecretKind::Transcription,
+        ),
+        "minutes" => (
+            settings.minutes,
+            ProviderTarget::Minutes,
+            SecretKind::Minutes,
+        ),
         _ => {
             return Err(CommandError::new(
                 "settings_invalid",
@@ -166,6 +180,21 @@ pub async fn test_provider_connection(
                 false,
             ))
         }
+    };
+    let new_api_key = input
+        .as_ref()
+        .and_then(|value| value.api_key.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let provider = match input.as_ref() {
+        Some(value) => resolve_provider(
+            value,
+            provider_target,
+            saved_provider.credential_preset_id.clone(),
+            saved_provider.secret_configured || new_api_key.is_some(),
+        )?,
+        None => saved_provider,
     };
     if provider.preset_id == config::PRESET_LOCAL_FUNASR {
         let local = LocalFunAsrProvider::discover_with_model_directory(
@@ -185,6 +214,12 @@ pub async fn test_provider_connection(
             },
         });
     }
+    if provider_target != ProviderTarget::Minutes {
+        return Ok(ProviderConnectionResult {
+            ok: false,
+            safe_message: "当前在线转写 Provider 不支持此连接测试".to_string(),
+        });
+    }
     let binding_id = provider.credential_preset_id.as_deref().ok_or_else(|| {
         CommandError::new(
             "provider_not_configured",
@@ -192,74 +227,97 @@ pub async fn test_provider_connection(
             false,
         )
     })?;
-    let api_key = secrets::read_secret_for_binding(secret_kind, binding_id)
-        .map_err(|_| credential_error())?
-        .filter(|value| !value.trim().is_empty());
-    let Some(api_key) = api_key.filter(|_| provider.secret_configured) else {
+    let api_key = match new_api_key {
+        Some(value) => Some(value),
+        None if provider.secret_configured => {
+            secrets::read_secret_for_binding(secret_kind, binding_id)
+                .map_err(|_| credential_error())?
+                .filter(|value| !value.trim().is_empty())
+        }
+        None => None,
+    };
+    let Some(api_key) = api_key else {
         return Ok(ProviderConnectionResult {
             ok: false,
             safe_message: "请先保存 API Key".to_string(),
         });
     };
-    probe_provider_endpoint(&provider, &api_key).await
-}
-
-/// 对已校验地址发起不携带业务正文的 GET，并禁止重定向与响应正文读取。
-async fn probe_provider_endpoint(
-    provider: &PublicProviderConfig,
-    api_key: &str,
-) -> Result<ProviderConnectionResult, CommandError> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_millis(provider.connect_timeout_ms))
-        .timeout(Duration::from_millis(
-            provider.request_timeout_ms.min(30_000),
-        ))
-        .redirect(Policy::none())
-        .build()
-        .map_err(|_| CommandError::new("connection_test_failed", "无法创建连接测试", true))?;
-    let request = client.get(&provider.endpoint);
-    let request = if provider.kind == "volcengine_asr" {
-        request.header("X-Api-Key", api_key)
-    } else {
-        request.bearer_auth(api_key)
+    let adapter = match build_minutes_provider(&provider) {
+        Ok(value) => value,
+        Err(error) => return Ok(failed_connection_result(&error)),
     };
-    let response = request.send().await.map_err(map_connection_probe_error)?;
-    Ok(classify_probe_status(response.status()))
+    let credential = ProviderCredential::new(api_key);
+    Ok(verify_minutes_provider_connection(
+        adapter.as_ref(),
+        &credential,
+        provider.request_timeout_ms.min(30_000),
+    )
+    .await)
 }
 
-/// 将连接探测网络错误归类为不包含地址、密钥或远端正文的安全提示。
-fn map_connection_probe_error(error: reqwest::Error) -> CommandError {
-    let message = if error.is_timeout() {
-        "连接测试超时，请检查网络、代理或服务地址"
-    } else if error.is_connect() {
-        "无法连接服务，请检查网络、代理或服务地址"
-    } else {
-        "连接测试失败，请稍后重试"
+/// 通过 Provider 抽象发送无用户数据的最小请求，验证 Key、模型和业务接口响应。
+async fn verify_minutes_provider_connection(
+    provider: &dyn MinutesProvider,
+    credential: &ProviderCredential,
+    timeout_ms: u64,
+) -> ProviderConnectionResult {
+    let context = ProviderCallContext::with_timeout(
+        "provider-connection-test",
+        uuid::Uuid::new_v4().to_string(),
+        CancellationToken::new(),
+        Duration::from_millis(timeout_ms.max(1_000)),
+    );
+    let request = MinutesGenerationRequest {
+        prompt: CONNECTION_TEST_PROMPT.to_string(),
+        output_schema: serde_json::json!({
+            "type": "object",
+            "required": ["ok"],
+            "properties": {"ok": {"const": true}},
+            "additionalProperties": false
+        }),
+        schema_version: CONNECTION_TEST_SCHEMA_VERSION.to_string(),
     };
-    CommandError::new("connection_test_failed", message, true)
-}
-
-/// 只根据 HTTP 状态分类可达性，不读取或展示远端响应正文。
-fn classify_probe_status(status: StatusCode) -> ProviderConnectionResult {
-    let (ok, safe_message) = if status.is_success() || status == StatusCode::METHOD_NOT_ALLOWED {
-        (
-            true,
-            "服务地址可达；本测试不发送音频或提示词，密钥、模型和业务字段将在实际处理时进一步验证",
-        )
-    } else {
-        match status {
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-                (false, "服务可达，但 API Key 未通过认证")
+    match provider
+        .generate_candidate(&context, request, Some(credential))
+        .await
+    {
+        Ok(candidate)
+            if candidate
+                .value
+                .get("ok")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true) =>
+        {
+            ProviderConnectionResult {
+                ok: true,
+                safe_message: "连接验证成功：API Key、模型和纪要生成接口均可用".to_string(),
             }
-            StatusCode::NOT_FOUND => (false, "服务可达，但接口路径不存在，请检查服务地址"),
-            StatusCode::TOO_MANY_REQUESTS => (false, "服务可达，但当前触发限流，请稍后重试"),
-            value if value.is_server_error() => (false, "服务可达，但服务端暂时不可用"),
-            value if value.is_redirection() => (false, "服务返回重定向，出于安全原因未继续访问"),
-            _ => (false, "服务已响应，但当前状态无法确认配置有效"),
         }
+        Ok(_) => ProviderConnectionResult {
+            ok: false,
+            safe_message: "服务已响应，但模型未返回预期的连接测试结果".to_string(),
+        },
+        Err(error) => failed_connection_result(&error),
+    }
+}
+
+/// 将 Provider 分类错误转换为不包含 Key、地址、提示词或响应正文的用户提示。
+fn failed_connection_result(error: &ProviderError) -> ProviderConnectionResult {
+    let safe_message = match error.category {
+        ProviderErrorCategory::Authentication => "API Key 未通过认证，请检查后重试",
+        ProviderErrorCategory::Permission => "API Key 无权访问所选模型或接口",
+        ProviderErrorCategory::RateLimit => "服务当前触发限流，请稍后重试",
+        ProviderErrorCategory::Network => "无法连接服务，请检查网络、代理或服务地址",
+        ProviderErrorCategory::Timeout => "连接测试超时，请检查网络或稍后重试",
+        ProviderErrorCategory::Provider => "服务端暂时不可用，请稍后重试",
+        ProviderErrorCategory::Protocol => "服务已响应，但返回格式与兼容接口不一致",
+        ProviderErrorCategory::Cancellation => "连接测试已取消",
+        ProviderErrorCategory::Configuration
+        | ProviderErrorCategory::Input
+        | ProviderErrorCategory::LocalResource => error.safe_message.as_str(),
     };
     ProviderConnectionResult {
-        ok,
+        ok: false,
         safe_message: safe_message.to_string(),
     }
 }
@@ -706,7 +764,83 @@ fn credential_error() -> CommandError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use serde_json::json;
+
     use super::*;
+    use crate::providers::{
+        openai_chat_completions_minutes_mapping, CancellationToken, HttpExecutor,
+        OpenAiCompatibleMinutesProvider, OperationOutcome, ProviderCredential,
+        ProviderCredentialPlacement, ProviderHttpBody, ProviderHttpConfig, ProviderHttpRequest,
+        RawHttpResponse, ReplaySafety, RetryPolicy, TransportError,
+    };
+
+    /// 在测试进程内捕获连接请求，但不读取、复制或记录凭据值。
+    struct ConnectionTestExecutor {
+        request: Mutex<Option<ProviderHttpRequest>>,
+        credential_present: Mutex<bool>,
+    }
+
+    #[async_trait]
+    impl HttpExecutor for ConnectionTestExecutor {
+        /// 返回一个最小有效模型响应，并只记录凭据是否存在。
+        async fn execute(
+            &self,
+            request: &ProviderHttpRequest,
+            credential: Option<&ProviderCredential>,
+            _auth: &ProviderCredentialPlacement,
+            _cancellation_token: &CancellationToken,
+        ) -> Result<RawHttpResponse, TransportError> {
+            *self.request.lock().expect("request lock") = Some(request.clone());
+            *self.credential_present.lock().expect("credential lock") =
+                credential.is_some_and(|value| !value.is_empty());
+            Ok(RawHttpResponse::new(
+                200,
+                BTreeMap::new(),
+                serde_json::to_vec(&json!({
+                    "choices": [{"message": {"content": "{\"ok\":true}"}}]
+                }))
+                .expect("response fixture"),
+            ))
+        }
+    }
+
+    /// 构造连接测试使用的兼容 Provider，不访问真实网络。
+    fn connection_test_provider(
+        executor: Arc<ConnectionTestExecutor>,
+    ) -> OpenAiCompatibleMinutesProvider {
+        OpenAiCompatibleMinutesProvider::with_executor(
+            ProviderHttpConfig {
+                provider_id: "custom-openai".to_string(),
+                adapter_id: "connection-test".to_string(),
+                adapter_version: "1".to_string(),
+                endpoint: "http://127.0.0.1/test".to_string(),
+                model: "test-model".to_string(),
+                auth: ProviderCredentialPlacement::Bearer,
+                connect_timeout_ms: 500,
+                request_timeout_ms: 500,
+                overall_timeout_ms: 1_000,
+                max_response_bytes: 64 * 1024,
+                max_concurrent: 1,
+                min_request_interval_ms: 0,
+                retry: RetryPolicy {
+                    max_retries: 0,
+                    base_delay_ms: 1,
+                    max_delay_ms: 1,
+                    max_retry_after_ms: 1,
+                },
+                replay_safety: ReplaySafety::NeverAutomaticallyReplay,
+                idempotency_header: None,
+                allow_insecure_loopback: true,
+            },
+            openai_chat_completions_minutes_mapping(),
+            executor,
+        )
+        .expect("connection provider")
+    }
 
     /// 构造有效的真实 Provider 配置用于纯校验测试。
     fn valid_input() -> ProviderSettingsInput {
@@ -739,16 +873,56 @@ mod tests {
         assert!(resolve_provider(&input, ProviderTarget::Minutes, None, false).is_ok());
     }
 
-    /// 验证无正文探测只把成功状态和方法不允许视为服务地址可达。
+    /// 验证连接测试通过 Provider/HTTP 抽象发送最小提示词并实际携带运行时凭据。
+    #[tokio::test]
+    async fn minutes_connection_test_calls_model_with_runtime_credential() {
+        let executor = Arc::new(ConnectionTestExecutor {
+            request: Mutex::new(None),
+            credential_present: Mutex::new(false),
+        });
+        let provider = connection_test_provider(executor.clone());
+        let credential = ProviderCredential::new("x".repeat(32));
+
+        let result = verify_minutes_provider_connection(&provider, &credential, 1_000).await;
+
+        assert!(result.ok);
+        assert!(result.safe_message.contains("API Key"));
+        assert!(*executor.credential_present.lock().expect("credential lock"));
+        let request = executor
+            .request
+            .lock()
+            .expect("request lock")
+            .clone()
+            .expect("request captured");
+        let ProviderHttpBody::Json(body) = request.body else {
+            panic!("connection request must be JSON");
+        };
+        assert_eq!(body["model"], "test-model");
+        assert!(body["messages"][0]["content"]
+            .as_str()
+            .expect("prompt")
+            .contains("连接测试"));
+    }
+
+    /// 验证认证失败使用稳定友好文案，绝不透传 Provider 提供的潜在敏感描述。
     #[test]
-    fn classifies_safe_connection_probe_statuses() {
-        assert!(classify_probe_status(StatusCode::OK).ok);
-        assert!(classify_probe_status(StatusCode::ACCEPTED).ok);
-        assert!(classify_probe_status(StatusCode::METHOD_NOT_ALLOWED).ok);
-        assert!(!classify_probe_status(StatusCode::UNAUTHORIZED).ok);
-        assert!(!classify_probe_status(StatusCode::NOT_FOUND).ok);
-        assert!(!classify_probe_status(StatusCode::TOO_MANY_REQUESTS).ok);
-        assert!(!classify_probe_status(StatusCode::BAD_GATEWAY).ok);
+    fn connection_test_redacts_provider_authentication_details() {
+        let error = ProviderError::new(
+            "http_401",
+            ProviderErrorCategory::Authentication,
+            false,
+            false,
+            "sentinel-provider-detail",
+            Some(401),
+            None,
+            OperationOutcome::Rejected,
+        );
+
+        let result = failed_connection_result(&error);
+
+        assert!(!result.ok);
+        assert_eq!(result.safe_message, "API Key 未通过认证，请检查后重试");
+        assert!(!result.safe_message.contains("sentinel-provider-detail"));
     }
 
     /// 验证保存输入转换后会立即计算公开就绪状态且不会包含 Key。

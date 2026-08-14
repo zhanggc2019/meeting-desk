@@ -130,7 +130,7 @@ const initialTasks: ProcessingTask[] = [
     processingStartedAt: null,
     processingDurationMs: 1_320_000,
     error: null,
-    availableActions: ["openMeeting"],
+    availableActions: ["openMeeting", "delete"],
   },
 ];
 
@@ -254,6 +254,53 @@ export function createMockDesktopClient(): DesktopClient {
   let sequence = 1;
   const artifactNames = new Map<string, string>();
 
+  /** 按任务状态筛选浏览器测试数据。 */
+  function filterTasks(query: TaskQuery): ProcessingTask[] {
+    return tasks.filter((task) => {
+      if (query.filter === "active") {
+        return !["completed", "failed", "cancelled"].includes(task.status);
+      }
+      if (query.filter === "failed") {
+        return task.status === "failed" || task.status === "interrupted";
+      }
+      if (query.filter === "completed") {
+        return task.status === "completed";
+      }
+      return true;
+    });
+  }
+
+  /** 按关键词筛选浏览器测试会议摘要。 */
+  function filterMeetings(query: string): MeetingSummary[] {
+    if (meetingDeleted) return [];
+    const summary: MeetingSummary = {
+      id: meeting.id,
+      title: meeting.minutes.title,
+      summary: meeting.minutes.summary,
+      meetingStartAt: meeting.minutes.meetingTime.startAt,
+      durationMs: meeting.durationMs,
+      processingDurationMs: meeting.processingDurationMs,
+      updatedAt: meeting.createdAt,
+      templateName: meeting.templateName,
+    };
+    const normalizedQuery = query.trim().toLocaleLowerCase("zh-CN");
+    const haystack = `${summary.title ?? ""} ${summary.summary ?? ""}`.toLocaleLowerCase("zh-CN");
+    return normalizedQuery && !haystack.includes(normalizedQuery) ? [] : [summary];
+  }
+
+  /** 将测试数据转换为与桌面端一致的分页结果。 */
+  function paginate<T>(items: T[], page: number, pageSize: number) {
+    const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+    const normalizedPage = Math.min(Math.max(1, page), totalPages);
+    return {
+      items: structuredClone(items.slice((normalizedPage - 1) * pageSize, normalizedPage * pageSize)),
+      total: items.length,
+      page: normalizedPage,
+      pageSize,
+      totalPages,
+    };
+  }
+
   return {
     async selectAudioFiles(mode) {
       if (!areProvidersReady(settings)) {
@@ -314,19 +361,10 @@ export function createMockDesktopClient(): DesktopClient {
       return structuredClone(created);
     },
     async listProcessingTasks(query: TaskQuery) {
-      const filtered = tasks.filter((task) => {
-        if (query.filter === "active") {
-          return !["completed", "failed", "cancelled"].includes(task.status);
-        }
-        if (query.filter === "failed") {
-          return task.status === "failed" || task.status === "interrupted";
-        }
-        if (query.filter === "completed") {
-          return task.status === "completed";
-        }
-        return true;
-      });
-      return structuredClone(filtered);
+      return structuredClone(filterTasks(query));
+    },
+    async listProcessingTasksPage(query) {
+      return paginate(filterTasks(query), query.page, query.pageSize);
     },
     async cancelProcessingTask(taskId) {
       const task = tasks.find((item) => item.id === taskId);
@@ -358,6 +396,7 @@ export function createMockDesktopClient(): DesktopClient {
       }
       tasks = tasks.filter((item) => item.id !== taskId);
       artifactNames.delete(task.artifactId);
+      if (task.meetingId === meeting.id) meetingDeleted = true;
       return true;
     },
     async reselectProcessingTask(taskId) {
@@ -377,20 +416,10 @@ export function createMockDesktopClient(): DesktopClient {
       return structuredClone(task);
     },
     async listMeetings(query) {
-      if (meetingDeleted) return [];
-      const summary: MeetingSummary = {
-        id: meeting.id,
-        title: meeting.minutes.title,
-        summary: meeting.minutes.summary,
-        meetingStartAt: meeting.minutes.meetingTime.startAt,
-        durationMs: meeting.durationMs,
-        processingDurationMs: meeting.processingDurationMs,
-        updatedAt: meeting.createdAt,
-        templateName: meeting.templateName,
-      };
-      const normalizedQuery = query.trim().toLocaleLowerCase("zh-CN");
-      const haystack = `${summary.title ?? ""} ${summary.summary ?? ""}`.toLocaleLowerCase("zh-CN");
-      return normalizedQuery && !haystack.includes(normalizedQuery) ? [] : [structuredClone(summary)];
+      return structuredClone(filterMeetings(query));
+    },
+    async listMeetingsPage(query) {
+      return paginate(filterMeetings(query.query), query.page, query.pageSize);
     },
     async getMeetingDetail(meetingId) {
       if (meetingDeleted || meetingId !== meeting.id) {
@@ -474,12 +503,12 @@ export function createMockDesktopClient(): DesktopClient {
       };
       return structuredClone(settings);
     },
-    async testProviderConnection(target) {
+    async testProviderConnection(target, input) {
       const provider = settings[target];
       if (provider.kind === "local_funasr") {
         return { ok: false, safeMessage: "浏览器测试环境无法检查本地模型，请在 Windows 桌面应用中检查环境" };
       }
-      if (!provider.secretConfigured) {
+      if (!provider.secretConfigured && !input?.apiKey?.trim()) {
         return { ok: false, safeMessage: "请先保存 API Key" };
       }
       return { ok: false, safeMessage: "浏览器测试环境不发送网络请求，请在 Windows 桌面应用中测试连接" };

@@ -1,6 +1,7 @@
 import { ArrowRight, FileAudio, RefreshCw, RotateCcw, SlidersHorizontal, Trash2, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
+import { Pagination } from "../../components/ui/Pagination";
 import type { ProcessingTask, TaskQuery } from "../../contracts/desktop";
 import { useDesktopClient } from "../../services/DesktopClientContext";
 import { getSafeErrorMessage } from "../../services/desktopClient";
@@ -13,6 +14,8 @@ const filters: Array<{ id: TaskQuery["filter"]; label: string }> = [
   { id: "failed", label: "失败" },
   { id: "completed", label: "已完成" },
 ];
+
+const TASKS_PAGE_SIZE = 10;
 
 const timelineStages = [
   "queued",
@@ -33,6 +36,9 @@ export function TasksPage() {
   const openMeeting = useAppStore((state) => state.openMeeting);
   const setTaskAttentionCount = useAppStore((state) => state.setTaskAttentionCount);
   const [filter, setFilter] = useState<TaskQuery["filter"]>("all");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
   const [tasks, setTasks] = useState<ProcessingTask[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [cancelTaskId, setCancelTaskId] = useState<string | null>(null);
@@ -42,6 +48,7 @@ export function TasksPage() {
   const [error, setError] = useState<string | null>(null);
 
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId) ?? tasks[0] ?? null, [selectedTaskId, tasks]);
+  const deleteTarget = useMemo(() => tasks.find((task) => task.id === deleteTaskId) ?? null, [deleteTaskId, tasks]);
   const hasActiveTasks = useMemo(
     () => tasks.some((task) => !["completed", "failed", "cancelled", "interrupted"].includes(task.status)),
     [tasks],
@@ -52,16 +59,22 @@ export function TasksPage() {
     setLoading(true);
     setError(null);
     try {
-      const nextTasks = await client.listProcessingTasks({ filter });
-      setTasks(nextTasks);
-      setTaskAttentionCount(nextTasks.filter((task) => ["failed", "interrupted"].includes(task.status)).length);
-      setSelectedTaskId((currentId) => currentId && !nextTasks.some((task) => task.id === currentId) ? null : currentId);
+      const [result, attentionTasks] = await Promise.all([
+        client.listProcessingTasksPage({ filter, page, pageSize: TASKS_PAGE_SIZE }),
+        client.listProcessingTasks({ filter: "failed" }),
+      ]);
+      setTasks(result.items);
+      setTotal(result.total);
+      setTotalPages(result.totalPages);
+      setPage((current) => current === result.page ? current : result.page);
+      setTaskAttentionCount(attentionTasks.length);
+      setSelectedTaskId((currentId) => currentId && !result.items.some((task) => task.id === currentId) ? null : currentId);
     } catch (reason) {
       setError(getSafeErrorMessage(reason));
     } finally {
       setLoading(false);
     }
-  }, [client, filter, setTaskAttentionCount]);
+  }, [client, filter, page, setTaskAttentionCount]);
 
   useEffect(() => {
     void loadTasks();
@@ -104,7 +117,7 @@ export function TasksPage() {
     }
   }
 
-  /** 确认删除失败任务及其不再被引用的受管临时文件。 */
+  /** 确认清除终态任务，并由后端级联清理该任务拥有的本地资料。 */
   async function confirmDeleteTask() {
     if (!deleteTaskId || busyTaskId) return;
     setBusyTaskId(deleteTaskId);
@@ -135,6 +148,19 @@ export function TasksPage() {
     }
   }
 
+  /** 切换任务筛选并从第一页重新查询。 */
+  function changeFilter(nextFilter: TaskQuery["filter"]) {
+    setFilter(nextFilter);
+    setPage(1);
+    setSelectedTaskId(null);
+  }
+
+  /** 切换任务页码并清除上一页的检查器选择。 */
+  function changePage(nextPage: number) {
+    setPage(nextPage);
+    setSelectedTaskId(null);
+  }
+
   return (
     <div className="page tasks-page">
       <header className="page-header">
@@ -151,7 +177,7 @@ export function TasksPage() {
       <div className="filter-bar" aria-label="任务筛选">
         <SlidersHorizontal size={16} aria-hidden="true" />
         {filters.map((item) => (
-          <button key={item.id} className="filter-button" type="button" aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}>{item.label}</button>
+          <button key={item.id} className="filter-button" type="button" aria-pressed={filter === item.id} onClick={() => changeFilter(item.id)}>{item.label}</button>
         ))}
       </div>
 
@@ -185,7 +211,7 @@ export function TasksPage() {
                       <td className="cell-actions">
                         {task.availableActions.includes("cancel") ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); setCancelTaskId(task.id); }} disabled={busyTaskId === task.id}>取消</button> : null}
                         {task.availableActions.includes("retry") ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); void retryTask(task.id); }} disabled={busyTaskId === task.id}><RotateCcw size={14} aria-hidden="true" />重试</button> : null}
-                        {task.availableActions.includes("delete") ? <button className="button table-action delete-action" type="button" onClick={(event) => { event.stopPropagation(); setDeleteTaskId(task.id); }} disabled={busyTaskId === task.id}><Trash2 size={14} aria-hidden="true" />删除</button> : null}
+                        {task.availableActions.includes("delete") ? <button className="button table-action delete-action" type="button" onClick={(event) => { event.stopPropagation(); setDeleteTaskId(task.id); }} disabled={busyTaskId === task.id}><Trash2 size={14} aria-hidden="true" />{task.status === "completed" ? "清除" : "删除"}</button> : null}
                         {task.availableActions.includes("reselectFile") ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); void reselectTaskAudio(task.id); }} disabled={busyTaskId === task.id}>重新选择</button> : null}
                         {task.availableActions.includes("openMeeting") && task.meetingId ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); openMeeting(task.meetingId!); }}>查看</button> : null}
                       </td>
@@ -195,6 +221,7 @@ export function TasksPage() {
               </table>
             </div>
           ) : null}
+          {total > 0 ? <Pagination page={page} totalPages={totalPages} total={total} disabled={loading} onPageChange={changePage} /> : null}
         </section>
 
         {selectedTask ? <TaskInspector task={selectedTask} onOpenMeeting={openMeeting} onOpenSettings={() => useAppStore.getState().openSettings()} /> : null}
@@ -211,9 +238,11 @@ export function TasksPage() {
       />
       <ConfirmDialog
         open={deleteTaskId !== null}
-        title="删除失败任务？"
-        description="只会删除任务记录和受管临时文件，不会删除你导入的原始文件。"
-        confirmLabel="删除任务"
+        title={deleteTarget?.status === "completed" ? "清除已完成任务？" : "删除失败任务？"}
+        description={deleteTarget?.status === "completed"
+          ? "清除后，关联会议记录、逐字稿、会议纪要和本地任务数据都会从本机永久删除；你导入的原始媒体文件不会受影响。"
+          : "只会删除任务记录和受管临时文件，不会删除你导入的原始文件。"}
+        confirmLabel={deleteTarget?.status === "completed" ? "确认清除" : "删除任务"}
         busy={busyTaskId === deleteTaskId}
         onCancel={() => setDeleteTaskId(null)}
         onConfirm={() => void confirmDeleteTask()}

@@ -5,12 +5,16 @@ import type {
   ImportMode,
   ImportCandidate,
   MeetingDetail,
+  MeetingPageQuery,
   MeetingSummary,
   MinutesTemplate,
+  PageResult,
   ProcessingTask,
+  ProviderSettingsInput,
   PublicSettings,
   SaveProviderSettingsInput,
   TaskQuery,
+  TaskPageQuery,
 } from "../contracts/desktop";
 
 export const DESKTOP_COMMANDS = {
@@ -18,11 +22,13 @@ export const DESKTOP_COMMANDS = {
   releaseAudioArtifact: "release_audio_artifact",
   createProcessingTasks: "create_processing_tasks",
   listProcessingTasks: "list_processing_tasks",
+  listProcessingTasksPage: "list_processing_tasks_page",
   cancelProcessingTask: "cancel_processing_task",
   retryProcessingTask: "retry_processing_task",
   deleteProcessingTask: "delete_processing_task",
   reselectProcessingTask: "reselect_processing_task",
   listMeetings: "list_meetings",
+  listMeetingsPage: "list_meetings_page",
   getMeetingDetail: "get_meeting_detail",
   getMeetingMarkdownPreview: "get_meeting_markdown_preview",
   deleteMeeting: "delete_meeting",
@@ -47,6 +53,8 @@ export interface DesktopClient {
   createProcessingTasks(artifactIds: string[], templateId: string): Promise<ProcessingTask[]>;
   /** 按持久化状态读取处理任务。 */
   listProcessingTasks(query: TaskQuery): Promise<ProcessingTask[]>;
+  /** 分页读取处理任务，避免一次加载全部历史记录。 */
+  listProcessingTasksPage(query: TaskPageQuery): Promise<PageResult<ProcessingTask>>;
   /** 请求取消单个处理任务。 */
   cancelProcessingTask(taskId: string): Promise<ProcessingTask>;
   /** 请求重试后端明确允许重试的任务。 */
@@ -57,6 +65,8 @@ export interface DesktopClient {
   reselectProcessingTask(taskId: string): Promise<ProcessingTask>;
   /** 仅在本地会议仓库中搜索会议。 */
   listMeetings(query: string): Promise<MeetingSummary[]>;
+  /** 在本地会议仓库中分页搜索会议。 */
+  listMeetingsPage(query: MeetingPageQuery): Promise<PageResult<MeetingSummary>>;
   /** 按 ID 读取已经持久化的纪要和逐字稿。 */
   getMeetingDetail(meetingId: string): Promise<MeetingDetail>;
   /** 返回与导出文件一致的 Markdown 文本，仅用于本地预览。 */
@@ -72,7 +82,7 @@ export interface DesktopClient {
   /** 保存配置并只返回公开配置状态。 */
   saveProviderSettings(input: SaveProviderSettingsInput): Promise<PublicSettings>;
   /** 返回不包含请求或响应正文的连接测试结果。 */
-  testProviderConnection(target: "transcription" | "minutes"): Promise<{ ok: boolean; safeMessage: string }>;
+  testProviderConnection(target: "transcription" | "minutes", input?: ProviderSettingsInput): Promise<{ ok: boolean; safeMessage: string }>;
 }
 
 /** 判断当前页面是否运行在 Tauri WebView 中。 */
@@ -116,6 +126,9 @@ export function createTauriDesktopClient(): DesktopClient {
     async listProcessingTasks(query) {
       return invoke<ProcessingTask[]>(DESKTOP_COMMANDS.listProcessingTasks, { query });
     },
+    async listProcessingTasksPage(query) {
+      return invoke<PageResult<ProcessingTask>>(DESKTOP_COMMANDS.listProcessingTasksPage, { query });
+    },
     async cancelProcessingTask(taskId) {
       return invoke<ProcessingTask>(DESKTOP_COMMANDS.cancelProcessingTask, { taskId });
     },
@@ -130,6 +143,9 @@ export function createTauriDesktopClient(): DesktopClient {
     },
     async listMeetings(query) {
       return invoke<MeetingSummary[]>(DESKTOP_COMMANDS.listMeetings, { query });
+    },
+    async listMeetingsPage(query) {
+      return invoke<PageResult<MeetingSummary>>(DESKTOP_COMMANDS.listMeetingsPage, { query });
     },
     async getMeetingDetail(meetingId) {
       return invoke<MeetingDetail>(DESKTOP_COMMANDS.getMeetingDetail, { meetingId });
@@ -152,8 +168,8 @@ export function createTauriDesktopClient(): DesktopClient {
     async saveProviderSettings(input) {
       return invoke<PublicSettings>(DESKTOP_COMMANDS.saveProviderSettings, { input });
     },
-    async testProviderConnection(target) {
-      return invoke<{ ok: boolean; safeMessage: string }>(DESKTOP_COMMANDS.testProviderConnection, { target });
+    async testProviderConnection(target, input) {
+      return invoke<{ ok: boolean; safeMessage: string }>(DESKTOP_COMMANDS.testProviderConnection, { target, input: input ?? null });
     },
   };
 }

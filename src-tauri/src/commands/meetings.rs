@@ -1,18 +1,19 @@
 use std::io::Write;
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::app_state::AppState;
 use crate::commands::CommandError;
-use crate::domain::{TaskRecord, TaskStatus};
+use crate::domain::{MeetingDetail, TaskRecord, TaskStatus};
 use crate::minutes::{render_minutes_markdown, MeetingMinutes};
+use crate::storage::MeetingRepository;
 
 /// 表示前端会议列表使用的摘要。
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingSummary {
     pub id: String,
@@ -23,6 +24,27 @@ pub struct MeetingSummary {
     pub processing_duration_ms: Option<u64>,
     pub updated_at: String,
     pub template_name: String,
+}
+
+/// 表示会议历史分页查询参数，页码从 1 开始。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingPageQuery {
+    #[serde(default)]
+    pub query: String,
+    pub page: u64,
+    pub page_size: u64,
+}
+
+/// 表示会议历史分页结果及搜索后的总数。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingPageResponse {
+    pub items: Vec<MeetingSummary>,
+    pub total: u64,
+    pub page: u64,
+    pub page_size: u64,
+    pub total_pages: u64,
 }
 
 /// 表示前端会议详情使用的稳定结构。
@@ -61,12 +83,59 @@ pub fn list_meetings(
     state: State<'_, AppState>,
     query: Option<String>,
 ) -> Result<Vec<MeetingSummary>, CommandError> {
-    let normalized = query.unwrap_or_default().trim().to_lowercase();
-    let items = state.repository.search_meetings("")?;
-    let tasks = state.repository.list_tasks()?;
-    let mut summaries = Vec::new();
+    build_meeting_summaries(&state.repository, query.as_deref())
+}
+
+/// 返回搜索后的会议历史分页，保留旧版完整列表命令的兼容性。
+#[tauri::command]
+pub fn list_meetings_page(
+    state: State<'_, AppState>,
+    query: MeetingPageQuery,
+) -> Result<MeetingPageResponse, CommandError> {
+    let offset = pagination_offset(query.page, query.page_size)?;
+    let (mut items, total) =
+        state
+            .repository
+            .search_meetings_page(&query.query, offset, query.page_size)?;
+    let actual_page = clamped_page(total, query.page, query.page_size);
+    if actual_page != query.page {
+        let actual_offset = pagination_offset(actual_page, query.page_size)?;
+        items = state
+            .repository
+            .search_meetings_page(&query.query, actual_offset, query.page_size)?
+            .0;
+    }
+    let mut summaries = Vec::with_capacity(items.len());
     for item in items {
         let Some(detail) = state.repository.get_meeting(&item.id)? else {
+            continue;
+        };
+        let processing_duration_ms = state
+            .repository
+            .get_completed_task_for_meeting(&detail.id)?
+            .as_ref()
+            .and_then(task_processing_duration_ms);
+        summaries.push(meeting_summary_from_detail(detail, processing_duration_ms));
+    }
+    Ok(meeting_page_response(
+        summaries,
+        total,
+        actual_page,
+        query.page_size,
+    ))
+}
+
+/// 从本地仓库构建会议摘要，并在数据库查询后执行正文搜索过滤。
+fn build_meeting_summaries(
+    repository: &MeetingRepository,
+    query: Option<&str>,
+) -> Result<Vec<MeetingSummary>, CommandError> {
+    let normalized = query.unwrap_or_default().trim().to_lowercase();
+    let items = repository.search_meetings("")?;
+    let tasks = repository.list_tasks()?;
+    let mut summaries = Vec::new();
+    for item in items {
+        let Some(detail) = repository.get_meeting(&item.id)? else {
             continue;
         };
         let title = detail.minutes["title"].as_str().map(str::to_string);
@@ -82,20 +151,91 @@ pub fn list_meetings(
             continue;
         }
         let processing_duration_ms = processing_duration_for_meeting(&tasks, &detail.id);
-        summaries.push(MeetingSummary {
-            id: detail.id,
-            title,
-            summary,
-            meeting_start_at: detail.minutes["meetingTime"]["startAt"]
-                .as_str()
-                .map(str::to_string),
-            duration_ms: detail.transcript_segments["durationMs"].as_u64(),
-            processing_duration_ms,
-            updated_at: detail.updated_at,
-            template_name: template_name(&detail.template_id).to_string(),
-        });
+        summaries.push(meeting_summary_from_detail(detail, processing_duration_ms));
     }
     Ok(summaries)
+}
+
+/// 把完整会议记录转换为不包含逐字稿正文的列表摘要。
+fn meeting_summary_from_detail(
+    detail: MeetingDetail,
+    processing_duration_ms: Option<u64>,
+) -> MeetingSummary {
+    MeetingSummary {
+        id: detail.id,
+        title: detail.minutes["title"].as_str().map(str::to_string),
+        summary: detail.minutes["summary"].as_str().map(str::to_string),
+        meeting_start_at: detail.minutes["meetingTime"]["startAt"]
+            .as_str()
+            .map(str::to_string),
+        duration_ms: detail.transcript_segments["durationMs"].as_u64(),
+        processing_duration_ms,
+        updated_at: detail.updated_at,
+        template_name: template_name(&detail.template_id).to_string(),
+    }
+}
+
+/// 对搜索完成的会议摘要应用有界分页，并返回过滤后的总数。
+#[cfg(test)]
+fn paginate_meetings(
+    summaries: Vec<MeetingSummary>,
+    page: u64,
+    page_size: u64,
+) -> Result<MeetingPageResponse, CommandError> {
+    pagination_offset(page, page_size)?;
+    let total = summaries.len() as u64;
+    let actual_page = clamped_page(total, page, page_size);
+    let offset = pagination_offset(actual_page, page_size)? as usize;
+    let items = summaries
+        .into_iter()
+        .skip(offset)
+        .take(page_size as usize)
+        .collect();
+    Ok(meeting_page_response(items, total, actual_page, page_size))
+}
+
+/// 构造稳定的会议分页响应，空结果仍保留第 1 页。
+fn meeting_page_response(
+    items: Vec<MeetingSummary>,
+    total: u64,
+    page: u64,
+    page_size: u64,
+) -> MeetingPageResponse {
+    MeetingPageResponse {
+        items,
+        total,
+        page,
+        page_size,
+        total_pages: total.div_ceil(page_size).max(1),
+    }
+}
+
+/// 把越过最后一页的请求收敛到当前有效页，便于删除最后一项后继续浏览。
+fn clamped_page(total: u64, page: u64, page_size: u64) -> u64 {
+    page.min(total.div_ceil(page_size).max(1))
+}
+
+/// 校验从 1 开始的分页参数，并安全计算数据库 OFFSET。
+fn pagination_offset(page: u64, page_size: u64) -> Result<u64, CommandError> {
+    if page == 0 || !(1..=100).contains(&page_size) {
+        return Err(CommandError::new(
+            "pagination_invalid",
+            "分页参数无效：页码须从 1 开始，每页最多 100 条",
+            false,
+        ));
+    }
+    let offset = page
+        .saturating_sub(1)
+        .checked_mul(page_size)
+        .ok_or_else(|| CommandError::new("pagination_invalid", "分页参数超出支持范围", false))?;
+    if offset > i64::MAX as u64 {
+        return Err(CommandError::new(
+            "pagination_invalid",
+            "分页参数超出支持范围",
+            false,
+        ));
+    }
+    Ok(offset)
 }
 
 /// 返回指定会议的完整结构化纪要和逐字稿。
@@ -167,10 +307,18 @@ pub fn delete_meeting(
     state: State<'_, AppState>,
     meeting_id: String,
 ) -> Result<bool, CommandError> {
-    state
+    let _task_gate = state
+        .task_gate
+        .lock()
+        .map_err(|_| CommandError::new("task_state_unavailable", "任务状态不可用", true))?;
+    crate::commands::tasks::ensure_related_tasks_deletable(&state.repository, &meeting_id)?;
+    let outcome = state
         .repository
-        .delete_meeting(&meeting_id)
-        .map_err(CommandError::from)
+        .delete_meeting_with_related_tasks(&meeting_id)?;
+    for artifact_id in outcome.artifact_ids {
+        crate::commands::tasks::cleanup_unused_artifact(&state, &artifact_id);
+    }
+    Ok(outcome.deleted)
 }
 
 /// 返回稳定顺序的全部内置纪要模板及其用户可读描述。
@@ -399,6 +547,37 @@ mod tests {
             processing_duration_for_meeting(&[task], "other-meeting"),
             None
         );
+    }
+
+    /// 验证会议分页返回搜索后的总数，并对页码与每页数量设置安全边界。
+    #[test]
+    fn paginates_meeting_search_results_with_bounded_parameters() {
+        let summaries = (0..5)
+            .map(|index| MeetingSummary {
+                id: format!("meeting-{index}"),
+                title: Some(format!("会议 {index}")),
+                summary: None,
+                meeting_start_at: None,
+                duration_ms: None,
+                processing_duration_ms: None,
+                updated_at: "2026-08-14T00:00:00Z".to_string(),
+                template_name: "标准会议".to_string(),
+            })
+            .collect::<Vec<_>>();
+
+        let page = paginate_meetings(summaries, 2, 2).expect("paginate meetings");
+        assert_eq!(page.total, 5);
+        assert_eq!(page.page, 2);
+        assert_eq!(page.page_size, 2);
+        assert_eq!(page.total_pages, 3);
+        assert_eq!(page.items.len(), 2);
+
+        let empty_page = paginate_meetings(Vec::new(), 8, 20).expect("clamp empty meeting page");
+        assert_eq!(empty_page.page, 1);
+        assert_eq!(empty_page.total_pages, 1);
+
+        let invalid = paginate_meetings(Vec::new(), 1, 0).expect_err("reject invalid page size");
+        assert_eq!(invalid.code, "pagination_invalid");
     }
 
     /// 验证原子导出能够完整替换已有文件，不会留下部分 Markdown。

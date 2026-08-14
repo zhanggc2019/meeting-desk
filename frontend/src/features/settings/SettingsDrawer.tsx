@@ -1,4 +1,4 @@
-import { Bot, CheckCircle2, ChevronDown, Cpu, FolderOpen, KeyRound, LoaderCircle, RotateCcw, Save, Server, ShieldCheck, X } from "lucide-react";
+import { Bot, CheckCircle2, ChevronDown, Copy, Cpu, FolderOpen, KeyRound, LoaderCircle, RotateCcw, Save, Server, ShieldCheck, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import type {
   ProviderKind,
@@ -32,6 +32,11 @@ const LOCAL_FUNASR_ENDPOINT = "local://model/SenseVoiceSmall";
 const XIAOMI_MIMO_LLM_ENDPOINT = "https://api.xiaomimimo.com/v1/chat/completions";
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions";
 const ALIYUN_BAILIAN_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+const MODEL_DOWNLOAD_COMMANDS = `$modelRoot = Join-Path $env:LOCALAPPDATA 'com.internal.meetingdesk\\model'
+New-Item -ItemType Directory -Force $modelRoot | Out-Null
+py -m pip install -U modelscope
+py -m modelscope.cli.cli download iic/SenseVoiceSmall --local-dir (Join-Path $modelRoot 'SenseVoiceSmall')
+py -m modelscope.cli.cli download iic/speech_fsmn_vad_zh-cn-16k-common-pytorch --local-dir (Join-Path $modelRoot 'fsmn-vad')`;
 
 const TRANSCRIPTION_PRESETS: ReadonlyArray<ProviderPresetDefinition> = [
   {
@@ -275,7 +280,7 @@ export function SettingsDrawer() {
     }
   }
 
-  /** 测试指定 Provider 的安全连接状态。 */
+  /** 使用当前未持久化草稿测试 Provider，不要求用户先保存候选密钥。 */
   async function testConnection(target: ProviderTarget) {
     setError(null);
     setNotice(null);
@@ -284,12 +289,8 @@ export function SettingsDrawer() {
       [target]: { testing: true, result: null },
     }));
     try {
-      const saved = await client.saveProviderSettings({ transcription, minutes });
-      setPublicSettings(saved);
-      setTranscription(toDraft(saved.transcription, "transcription"));
-      setMinutes(toDraft(saved.minutes, "minutes"));
-      markSettingsUpdated();
-      const result = await client.testProviderConnection(target);
+      const draft = target === "transcription" ? transcription : minutes;
+      const result = await client.testProviderConnection(target, draft);
       setConnectionTests((current) => ({
         ...current,
         [target]: { testing: false, result: { ok: result.ok, message: result.safeMessage } },
@@ -404,6 +405,7 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
   const isLocal = selectedPreset.kind === "local_funasr";
   const [selectingModelPath, setSelectingModelPath] = useState(false);
   const [modelPathError, setModelPathError] = useState<string | null>(null);
+  const [modelCommandCopy, setModelCommandCopy] = useState<"success" | "error" | null>(null);
 
   /** 更新一个 Provider 草稿字段。 */
   function update<K extends keyof ProviderDraft>(key: K, nextValue: ProviderDraft[K]) {
@@ -426,6 +428,16 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
       setModelPathError(getSafeErrorMessage(reason));
     } finally {
       setSelectingModelPath(false);
+    }
+  }
+
+  /** 复制由用户主动执行的 ModelScope PowerShell 下载命令。 */
+  async function copyModelDownloadCommands() {
+    try {
+      await navigator.clipboard.writeText(MODEL_DOWNLOAD_COMMANDS);
+      setModelCommandCopy("success");
+    } catch {
+      setModelCommandCopy("error");
     }
   }
 
@@ -458,12 +470,21 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
             <div className="local-model-guide-header">
               <div>
                 <strong>放置 SenseVoiceSmall 与 fsmn-vad 模型</strong>
+                <p>下载来源：ModelScope 官方模型库</p>
               </div>
+              <button className="button secondary" type="button" onClick={() => void copyModelDownloadCommands()}><Copy size={14} aria-hidden="true" />复制模型下载命令</button>
             </div>
+            <div className="model-source-list">
+              <span>ASR：<code>iic/SenseVoiceSmall</code></span>
+              <span>VAD：<code>iic/speech_fsmn_vad_zh-cn-16k-common-pytorch</code></span>
+            </div>
+            <pre className="model-download-command" aria-label="PowerShell 模型下载命令"><code>{MODEL_DOWNLOAD_COMMANDS}</code></pre>
+            <p>下载命令通过 <code>py -m modelscope.cli.cli</code> 调用 Python 模块，不依赖 <code>modelscope</code> 是否已加入 PATH。</p>
             <p>下载完成后，将完整的 SenseVoiceSmall 文件夹放到 <code>%LOCALAPPDATA%\com.internal.meetingdesk\model\SenseVoiceSmall</code>。</p>
             <p>将完整的 fsmn-vad 文件夹放到 <code>%LOCALAPPDATA%\com.internal.meetingdesk\model\fsmn-vad</code>，与 SenseVoiceSmall 保持同级。</p>
             <p>也可以在下方直接选择已有 SenseVoiceSmall 目录，无需复制；软件会自动查找其同级 fsmn-vad，并将长录音切成最长 30 秒的语音段。</p>
             <p>放置或选择模型后，点击“检查环境”；检查通过后，软件默认使用这两个本地模型转写。</p>
+            {modelCommandCopy ? <span className={`copy-status ${modelCommandCopy}`} role="status">{modelCommandCopy === "success" ? "下载命令已复制" : "复制失败，请手动选择命令文本"}</span> : null}
           </div>
         ) : null}
 
@@ -532,6 +553,7 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
           {connectionTest.testing ? <><LoaderCircle className="spin" size={15} aria-hidden="true" />正在检查</> : (isLocal ? "检查环境" : "测试连接")}
         </button>
       </div>
+      {!isLocal ? <p className="connection-test-note">测试连接会向所选大模型发送极简验证提示词，确认 API Key、服务地址与所选模型真实可用；不会发送音频、逐字稿或会议内容。</p> : null}
       {connectionTest.result ? (
         <div className={`connection-result ${connectionTest.result.ok ? "success" : "error"}`} role={connectionTest.result.ok ? "status" : "alert"}>
           {connectionTest.result.ok ? <CheckCircle2 size={15} aria-hidden="true" /> : null}

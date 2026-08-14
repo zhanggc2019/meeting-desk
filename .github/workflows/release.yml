@@ -76,9 +76,11 @@ jobs:
           tagName: v__VERSION__
           releaseName: 听见纪要 v__VERSION__
           releaseBody: |
-            - 新增本地 FSMN-VAD 模型支持，长录音会切成最长 30 秒的语音段后再转写，避免整段推理耗尽内存和分页文件。
-            - 设置与帮助页面说明两个模型的放置位置；选择 SenseVoiceSmall 后会自动查找同级 fsmn-vad，“检查环境”会同时验证并加载两个模型。
-            - 继续内置本地 FunASR Python 运行时；模型文件由用户单独下载后放置或选择，不包含在安装包和升级包中。
+            - 大模型“测试连接”现在会发送不含用户数据的极简提示词，真实验证 API Key、所选模型和纪要接口。
+            - 本地 ASR 设置新增 SenseVoiceSmall 与 FSMN-VAD 的 ModelScope 下载来源、PowerShell 命令、放置目录和一键复制。
+            - 任务队列与会议记录新增分页；成功任务和会议记录均可二次确认删除，并级联清理关联逐字稿、纪要和任务数据。
+            - 修复部分大模型返回 Markdown 代码围栏或简短说明时触发 invalid_minutes_json 的问题，同时继续拒绝多个或无效 JSON 候选。
+            - 模型文件仍由用户单独下载，不包含在安装包和升级包中。
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true

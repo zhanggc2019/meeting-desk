@@ -189,7 +189,7 @@ describe("Windows 离线媒体工作台", () => {
   it("存在进行中任务时每三秒自动刷新任务队列", async () => {
     vi.useFakeTimers();
     const client = createMockDesktopClient();
-    const listTasks = vi.spyOn(client, "listProcessingTasks");
+    const listTasks = vi.spyOn(client, "listProcessingTasksPage");
     render(<App client={client} />);
 
     fireEvent.click(screen.getByRole("button", { name: "任务队列" }));
@@ -221,6 +221,66 @@ describe("Windows 离线媒体工作台", () => {
     await user.click(within(dialog).getByRole("button", { name: "删除任务" }));
 
     await waitFor(() => expect(screen.queryByText("客户访谈.mp3")).not.toBeInTheDocument());
+  });
+
+  it("二次确认后清除成功任务及其关联会议资料", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const deleteTask = vi.spyOn(client, "deleteProcessingTask");
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "任务队列" }));
+
+    const completedRow = (await screen.findByText("产品讨论.m4a")).closest("tr");
+    expect(completedRow).not.toBeNull();
+    await user.click(within(completedRow!).getByRole("button", { name: "清除" }));
+
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText(/关联会议记录、逐字稿、会议纪要和本地任务数据都会从本机永久删除/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "确认清除" }));
+
+    await waitFor(() => expect(deleteTask).toHaveBeenCalledWith("task-complete-1"));
+    expect(screen.queryByText("产品讨论.m4a")).not.toBeInTheDocument();
+  });
+
+  it("任务记录分页查询并在筛选变化后回到第一页", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const initialTasks = await client.listProcessingTasks({ filter: "all" });
+    const completedTemplate = initialTasks.find((task) => task.status === "completed")!;
+    const failedTemplate = initialTasks.find((task) => task.status === "failed")!;
+    const completedTasks = Array.from({ length: 12 }, (_, index) => ({
+      ...completedTemplate,
+      id: `completed-${index + 1}`,
+      displayName: `已完成录音-${String(index + 1).padStart(2, "0")}.mp3`,
+      meetingId: null,
+      availableActions: ["delete"] as typeof completedTemplate.availableActions,
+    }));
+    const allTasks = [...completedTasks, { ...failedTemplate, id: "failed-page-test", displayName: "分页失败录音.mp3" }];
+    const listTaskPage = vi.spyOn(client, "listProcessingTasksPage").mockImplementation(async ({ filter, page, pageSize }) => {
+      const filtered = filter === "completed" ? completedTasks : filter === "failed" ? [allTasks[12]!] : allTasks;
+      const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+      return {
+        items: filtered.slice((page - 1) * pageSize, page * pageSize),
+        total: filtered.length,
+        page,
+        pageSize,
+        totalPages,
+      };
+    });
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "任务队列" }));
+
+    expect(await screen.findByText("第 1 / 2 页，共 13 条")).toBeInTheDocument();
+    expect(screen.getByText("已完成录音-10.mp3")).toBeInTheDocument();
+    expect(screen.queryByText("已完成录音-11.mp3")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "下一页" }));
+    expect((await screen.findAllByText("已完成录音-11.mp3")).length).toBeGreaterThan(0);
+    expect(listTaskPage).toHaveBeenLastCalledWith({ filter: "all", page: 2, pageSize: 10 });
+
+    await user.click(screen.getByRole("button", { name: "已完成" }));
+    expect(await screen.findByText("第 1 / 2 页，共 12 条")).toBeInTheDocument();
+    expect(listTaskPage).toHaveBeenLastCalledWith({ filter: "completed", page: 1, pageSize: 10 });
+    expect(screen.getByLabelText("1 个任务需要关注")).toBeInTheDocument();
   });
 
   it("打开结构化纪要和完整逐字稿并执行复制", async () => {
@@ -258,6 +318,59 @@ describe("Windows 离线媒体工作台", () => {
     await waitFor(() => expect(deleteMeeting).toHaveBeenCalledWith("meeting-demo-1"));
     expect(await screen.findByRole("heading", { name: "会议记录" })).toBeInTheDocument();
     expect(screen.queryByText("产品交付节奏讨论")).not.toBeInTheDocument();
+  });
+
+  it("在会议列表二次确认删除并刷新分页结果", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const deleteMeeting = vi.spyOn(client, "deleteMeeting");
+    const listMeetingPage = vi.spyOn(client, "listMeetingsPage");
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "会议记录" }));
+
+    const meetingRow = (await screen.findByText("产品交付节奏讨论")).closest("tr");
+    expect(meetingRow).not.toBeNull();
+    await user.click(within(meetingRow!).getByRole("button", { name: "删除 产品交付节奏讨论" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText(/会议记录、逐字稿、会议纪要和关联任务/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "删除会议" }));
+
+    await waitFor(() => expect(deleteMeeting).toHaveBeenCalledWith("meeting-demo-1"));
+    expect(listMeetingPage.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByRole("heading", { name: "还没有会议记录" })).toBeInTheDocument();
+  });
+
+  it("会议记录分页查询并在搜索变化后回到第一页", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const firstPage = await client.listMeetings("");
+    const template = firstPage[0]!;
+    const meetings = Array.from({ length: 12 }, (_, index) => ({
+      ...template,
+      id: `meeting-${index + 1}`,
+      title: `会议记录-${String(index + 1).padStart(2, "0")}`,
+    }));
+    const listMeetingPage = vi.spyOn(client, "listMeetingsPage").mockImplementation(async ({ query, page, pageSize }) => {
+      const filtered = query ? meetings.filter((item) => item.title?.includes(query)) : meetings;
+      return {
+        items: filtered.slice((page - 1) * pageSize, page * pageSize),
+        total: filtered.length,
+        page,
+        pageSize,
+        totalPages: Math.max(1, Math.ceil(filtered.length / pageSize)),
+      };
+    });
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "会议记录" }));
+
+    expect(await screen.findByText("第 1 / 2 页，共 12 条")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("会议记录-11")).toBeInTheDocument();
+    expect(listMeetingPage).toHaveBeenLastCalledWith({ query: "", page: 2, pageSize: 10 });
+
+    await user.type(screen.getByLabelText("搜索会议记录"), "01");
+    await waitFor(() => expect(listMeetingPage).toHaveBeenLastCalledWith({ query: "01", page: 1, pageSize: 10 }));
+    expect(await screen.findByText("第 1 / 1 页，共 1 条")).toBeInTheDocument();
   });
 
   it("本地 ASR 隐藏地址和密钥并保留受控纪要预设", async () => {
@@ -308,6 +421,8 @@ describe("Windows 离线媒体工作台", () => {
 
   it("展示模型放置目录和本地 ASR 使用步骤", async () => {
     const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     render(<App client={createMockDesktopClient()} />);
     await user.click(screen.getByRole("button", { name: "设置" }));
 
@@ -317,8 +432,13 @@ describe("Windows 离线媒体工作台", () => {
     expect(within(transcriptionSection).getByText(/下载完成后，将完整的 SenseVoiceSmall 文件夹放到/)).toBeInTheDocument();
     expect(within(transcriptionSection).getByText(/最长 30 秒的语音段/)).toBeInTheDocument();
     expect(within(transcriptionSection).getByRole("button", { name: "检查环境" })).toBeInTheDocument();
-    expect(within(transcriptionSection).queryByText(/下载来源/)).not.toBeInTheDocument();
-    expect(within(transcriptionSection).queryByRole("button", { name: "复制模型下载命令" })).not.toBeInTheDocument();
+    expect(within(transcriptionSection).getByText(/下载来源：ModelScope 官方模型库/)).toBeInTheDocument();
+    expect(within(transcriptionSection).getAllByText(/iic\/SenseVoiceSmall/).length).toBeGreaterThan(0);
+    expect(within(transcriptionSection).getAllByText(/iic\/speech_fsmn_vad_zh-cn-16k-common-pytorch/).length).toBeGreaterThan(0);
+    const copyButton = within(transcriptionSection).getByRole("button", { name: "复制模型下载命令" });
+    await user.click(copyButton);
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("py -m modelscope.cli.cli download iic/SenseVoiceSmall"));
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("py -m modelscope.cli.cli download iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"));
   });
 
   it("选择已有 SenseVoiceSmall 目录并随本地转写设置保存", async () => {
@@ -447,6 +567,28 @@ describe("Windows 离线媒体工作台", () => {
     const transcriptionSection = await screen.findByRole("region", { name: "本地 ASR 模型" });
     await user.click(within(transcriptionSection).getByRole("button", { name: "检查环境" }));
     expect(await within(transcriptionSection).findByText(/Windows 桌面应用中检查环境/)).toBeInTheDocument();
+  });
+
+  it("大模型测试连接会发送极简提示词验证密钥和模型", async () => {
+    const user = userEvent.setup();
+    const placeholderSecret = "x".repeat(32);
+    const client = await createConfiguredClient();
+    const testConnection = vi.spyOn(client, "testProviderConnection");
+    render(<App client={client} />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(await screen.findByRole("button", { name: "大模型" }));
+    const minutesSection = screen.getByRole("region", { name: "纪要生成大模型" });
+    expect(within(minutesSection).getByText(/发送极简验证提示词/)).toBeInTheDocument();
+    expect(within(minutesSection).getByText(/确认 API Key、服务地址与所选模型真实可用/)).toBeInTheDocument();
+    expect(within(minutesSection).queryByText(/不发送音频或提示词/)).not.toBeInTheDocument();
+    await user.type(within(minutesSection).getByLabelText("会议纪要 API Key"), placeholderSecret);
+    await user.click(within(minutesSection).getByRole("button", { name: "测试连接" }));
+    await waitFor(() => expect(testConnection).toHaveBeenCalledWith("minutes", expect.objectContaining({
+      presetId: "deepseek",
+      model: "deepseek-v4-flash",
+      apiKey: placeholderSecret,
+    })));
   });
 
   it("在会议详情渲染安全的 Markdown 文档预览", async () => {

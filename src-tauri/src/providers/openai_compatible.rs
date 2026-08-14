@@ -673,12 +673,7 @@ impl OpenAiCompatibleMinutesProvider {
                         "Provider 纪要字段类型与配置不一致",
                     )
                 })?;
-                serde_json::from_str(encoded).map_err(|_| {
-                    ProviderError::protocol(
-                        "invalid_minutes_json",
-                        "Provider 纪要候选不是有效 JSON",
-                    )
-                })?
+                parse_json_object_content(encoded)?
             }
         };
         let remote_request_id = self
@@ -693,6 +688,64 @@ impl OpenAiCompatibleMinutesProvider {
             provider_metadata: provider_metadata(&self.config, remote_request_id, started_at),
         })
     }
+}
+
+/// 从兼容接口的 content 字符串提取唯一完整 JSON 对象，允许代码围栏或无花括号的前后说明。
+fn parse_json_object_content(content: &str) -> Result<Value, ProviderError> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_minutes_json_error());
+    }
+
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return require_json_object(value);
+    }
+
+    if let Some(inner) = strip_single_json_fence(trimmed) {
+        let value =
+            serde_json::from_str::<Value>(inner).map_err(|_| invalid_minutes_json_error())?;
+        return require_json_object(value);
+    }
+
+    let start = trimmed.find('{').ok_or_else(invalid_minutes_json_error)?;
+    let end = trimmed.rfind('}').ok_or_else(invalid_minutes_json_error)?;
+    if start >= end {
+        return Err(invalid_minutes_json_error());
+    }
+    let value = serde_json::from_str::<Value>(&trimmed[start..=end])
+        .map_err(|_| invalid_minutes_json_error())?;
+    require_json_object(value)
+}
+
+/// 移除一个完整的 json 或无语言 Markdown 代码围栏，拒绝嵌套围栏。
+fn strip_single_json_fence(value: &str) -> Option<&str> {
+    if !value.starts_with("```") || !value.ends_with("```") {
+        return None;
+    }
+    let header_end = value.find('\n')?;
+    let language = value[3..header_end].trim();
+    if !language.is_empty() && !language.eq_ignore_ascii_case("json") {
+        return None;
+    }
+    let inner = value[header_end + 1..value.len() - 3].trim();
+    (!inner.contains("```")).then_some(inner)
+}
+
+/// 确保模型候选是根 JSON 对象，数组、标量和 null 仍按无效纪要处理。
+fn require_json_object(value: Value) -> Result<Value, ProviderError> {
+    if value.is_object() {
+        Ok(value)
+    } else {
+        Err(invalid_minutes_json_error())
+    }
+}
+
+/// 构造不携带模型原文的稳定纪要 JSON 错误。
+fn invalid_minutes_json_error() -> ProviderError {
+    ProviderError::protocol(
+        "invalid_minutes_json",
+        "大模型未返回有效的单一 JSON 对象，请重试或检查模型兼容性",
+    )
 }
 
 #[async_trait]
@@ -1766,6 +1819,111 @@ mod tests {
             .await
             .expect("Chat Completions response should parse");
         assert_eq!(candidate.value["schemaVersion"], "1.0.0");
+    }
+
+    /// 验证兼容接口可接受模型常见的单一 Markdown 围栏 JSON，不放宽为任意文本。
+    #[tokio::test]
+    async fn chat_completions_accepts_single_fenced_json_object() {
+        let executor = Arc::new(ScriptedExecutor::new(vec![Ok(RawHttpResponse::new(
+            200,
+            BTreeMap::new(),
+            serde_json::to_vec(&json!({
+                "choices": [{"message": {"content": "```json\n{\"schemaVersion\":\"1.0.0\"}\n```"}}]
+            }))
+            .expect("fixture should serialize"),
+        ))]));
+        let provider = OpenAiCompatibleMinutesProvider::with_executor(
+            test_http_config(ReplaySafety::NeverAutomaticallyReplay),
+            openai_chat_completions_minutes_mapping(),
+            executor,
+        )
+        .expect("Chat Completions provider should build");
+
+        let candidate = provider
+            .generate_candidate(
+                &test_context(),
+                MinutesGenerationRequest {
+                    prompt: "short non-sensitive fixture".to_string(),
+                    output_schema: json!({"type": "object"}),
+                    schema_version: "1.0.0".to_string(),
+                },
+                Some(&test_credential()),
+            )
+            .await
+            .expect("fenced JSON object should parse");
+
+        assert_eq!(candidate.value["schemaVersion"], "1.0.0");
+    }
+
+    /// 验证前后简短说明只包裹一个完整 JSON 对象时可以解析。
+    #[tokio::test]
+    async fn chat_completions_accepts_single_json_object_with_surrounding_text() {
+        let executor = Arc::new(ScriptedExecutor::new(vec![Ok(RawHttpResponse::new(
+            200,
+            BTreeMap::new(),
+            serde_json::to_vec(&json!({
+                "choices": [{"message": {"content": "结果如下：\n{\"schemaVersion\":\"1.0.0\"}\n生成完成。"}}]
+            }))
+            .expect("fixture should serialize"),
+        ))]));
+        let provider = OpenAiCompatibleMinutesProvider::with_executor(
+            test_http_config(ReplaySafety::NeverAutomaticallyReplay),
+            openai_chat_completions_minutes_mapping(),
+            executor,
+        )
+        .expect("Chat Completions provider should build");
+
+        let candidate = provider
+            .generate_candidate(
+                &test_context(),
+                MinutesGenerationRequest {
+                    prompt: "short non-sensitive fixture".to_string(),
+                    output_schema: json!({"type": "object"}),
+                    schema_version: "1.0.0".to_string(),
+                },
+                Some(&test_credential()),
+            )
+            .await
+            .expect("single wrapped JSON object should parse");
+
+        assert_eq!(candidate.value["schemaVersion"], "1.0.0");
+    }
+
+    /// 验证无效 JSON 和多个根对象仍明确失败，不能用宽松提取掩盖异常结果。
+    #[tokio::test]
+    async fn chat_completions_rejects_invalid_or_multiple_json_objects() {
+        for content in ["not-json", "说明 {\"ok\":true} {\"other\":true}"] {
+            let executor = Arc::new(ScriptedExecutor::new(vec![Ok(RawHttpResponse::new(
+                200,
+                BTreeMap::new(),
+                serde_json::to_vec(&json!({
+                    "choices": [{"message": {"content": content}}]
+                }))
+                .expect("fixture should serialize"),
+            ))]));
+            let provider = OpenAiCompatibleMinutesProvider::with_executor(
+                test_http_config(ReplaySafety::NeverAutomaticallyReplay),
+                openai_chat_completions_minutes_mapping(),
+                executor,
+            )
+            .expect("Chat Completions provider should build");
+
+            let error = provider
+                .generate_candidate(
+                    &test_context(),
+                    MinutesGenerationRequest {
+                        prompt: "short non-sensitive fixture".to_string(),
+                        output_schema: json!({"type": "object"}),
+                        schema_version: "1.0.0".to_string(),
+                    },
+                    Some(&test_credential()),
+                )
+                .await
+                .expect_err("invalid content must fail");
+
+            assert_eq!(error.code, "invalid_minutes_json");
+            assert!(!format!("{error:?}").contains(content));
+        }
     }
 
     /// Keeps imported transcript values out of unrelated debug assertions.

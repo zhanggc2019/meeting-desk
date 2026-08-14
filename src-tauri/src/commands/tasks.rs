@@ -7,7 +7,7 @@ use std::{
 
 use chrono::Utc;
 use log::{error as log_error, info};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -26,12 +26,32 @@ use crate::providers::{
     TranscriptionProvider, TranscriptionRequest,
 };
 use crate::secrets::{self, SecretKind};
-use crate::storage::MeetingRepository;
+use crate::storage::{MeetingRepository, RelatedRecordsDeletion};
 
 /// 表示任务列表的前端筛选条件。
 #[derive(Debug, Deserialize)]
 pub struct TaskQuery {
     pub filter: String,
+}
+
+/// 表示任务分页查询参数，页码从 1 开始。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPageQuery {
+    pub filter: String,
+    pub page: u64,
+    pub page_size: u64,
+}
+
+/// 表示任务分页结果及筛选后的总数。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPageResponse {
+    pub items: Vec<TaskRecord>,
+    pub total: u64,
+    pub page: u64,
+    pub page_size: u64,
+    pub total_pages: u64,
 }
 
 /// Holds the provider-neutral adapters and credentials used by one processing attempt.
@@ -250,6 +270,36 @@ pub fn list_processing_tasks(
         .collect())
 }
 
+/// 返回按状态筛选后的任务分页，保留旧版完整列表命令的兼容性。
+#[tauri::command]
+pub fn list_processing_tasks_page(
+    state: State<'_, AppState>,
+    query: TaskPageQuery,
+) -> Result<TaskPageResponse, CommandError> {
+    let offset = pagination_offset(query.page, query.page_size)?;
+    let (mut tasks, total) =
+        state
+            .repository
+            .list_tasks_page(&query.filter, offset, query.page_size)?;
+    let actual_page = clamped_page(total, query.page, query.page_size);
+    if actual_page != query.page {
+        let actual_offset = pagination_offset(actual_page, query.page_size)?;
+        tasks = state
+            .repository
+            .list_tasks_page(&query.filter, actual_offset, query.page_size)?
+            .0;
+    }
+    Ok(task_page_response(
+        tasks
+            .into_iter()
+            .map(with_available_delete_action)
+            .collect(),
+        total,
+        actual_page,
+        query.page_size,
+    ))
+}
+
 /// 请求取消正在运行的任务，并立即返回可见的 cancel_requested 状态。
 #[tauri::command]
 pub fn cancel_processing_task(
@@ -376,12 +426,14 @@ pub fn delete_processing_task(
         .task_gate
         .lock()
         .map_err(|_| CommandError::new("task_state_unavailable", "任务状态不可用", true))?;
-    let artifact_id = delete_task_record(&state.repository, &task_id)?;
-    if let Some(artifact_id) = artifact_id {
+    let outcome = delete_task_record(&state.repository, &task_id)?;
+    if outcome.deleted {
         if let Ok(mut cancellations) = state.cancellations.lock() {
             cancellations.remove(&task_id);
         }
-        cleanup_unused_artifact(&state, &artifact_id);
+        for artifact_id in outcome.artifact_ids {
+            cleanup_unused_artifact(&state, &artifact_id);
+        }
         return Ok(true);
     }
     Ok(false)
@@ -561,7 +613,7 @@ fn restart_with_reselected_artifact(
 }
 
 /// 在重新绑定失败时尽力清理刚导入且未被任务采用的暂存副本。
-fn cleanup_unused_artifact(state: &State<'_, AppState>, artifact_id: &str) {
+pub(crate) fn cleanup_unused_artifact(state: &State<'_, AppState>, artifact_id: &str) {
     let is_active = state.repository.list_tasks().ok().is_some_and(|tasks| {
         tasks
             .into_iter()
@@ -1075,26 +1127,55 @@ fn task_matches_filter(task: &TaskRecord, filter: &str) -> bool {
     }
 }
 
-/// 判断任务是否可独立删除，避免绕过会议记录的级联删除流程。
+/// 判断任务是否已停止执行且可以连同关联记录一起安全删除。
 fn task_can_be_deleted(task: &TaskRecord) -> bool {
-    task.meeting_id.is_none() && matches!(task.status, TaskStatus::Failed | TaskStatus::Interrupted)
+    matches!(
+        task.status,
+        TaskStatus::Failed
+            | TaskStatus::Interrupted
+            | TaskStatus::Completed
+            | TaskStatus::Cancelled
+    )
 }
 
-/// 校验并删除任务快照，成功时返回需要尝试清理的受管 artifact ID。
+/// 校验并事务删除任务及关联记录，返回需要尝试清理的受管 artifact ID。
 fn delete_task_record(
     repository: &MeetingRepository,
     task_id: &str,
-) -> Result<Option<String>, CommandError> {
+) -> Result<RelatedRecordsDeletion, CommandError> {
     let task = find_task(repository, task_id)?;
     if !task_can_be_deleted(&task) {
         return Err(CommandError::new(
             "task_not_deletable",
-            "仅允许删除未生成会议记录的失败任务",
+            "任务仍在处理或取消请求中，当前不能删除",
             false,
         ));
     }
-    let deleted = repository.delete_task(task_id)?;
-    Ok(deleted.then_some(task.artifact_id))
+    if let Some(meeting_id) = task.meeting_id.as_deref() {
+        ensure_related_tasks_deletable(repository, meeting_id)?;
+    }
+    repository
+        .delete_task_with_related_records(task_id)
+        .map_err(CommandError::from)
+}
+
+/// 确保会议关联的全部任务都已停止，避免级联删除仍在执行的任务。
+pub(crate) fn ensure_related_tasks_deletable(
+    repository: &MeetingRepository,
+    meeting_id: &str,
+) -> Result<(), CommandError> {
+    let has_active_task = repository
+        .list_tasks()?
+        .into_iter()
+        .any(|task| task.meeting_id.as_deref() == Some(meeting_id) && !task_can_be_deleted(&task));
+    if has_active_task {
+        return Err(CommandError::new(
+            "task_not_deletable",
+            "关联任务仍在处理或取消请求中，当前不能删除",
+            false,
+        ));
+    }
+    Ok(())
 }
 
 /// 为旧版持久化的失败任务补充删除动作，不改写数据库历史快照。
@@ -1103,6 +1184,78 @@ fn with_available_delete_action(mut task: TaskRecord) -> TaskRecord {
         task.available_actions.push(TaskAction::Delete);
     }
     task
+}
+
+/// 在任务状态筛选完成后应用受限分页，并计算筛选结果总数。
+#[cfg(test)]
+fn paginate_tasks(
+    tasks: Vec<TaskRecord>,
+    query: &TaskPageQuery,
+) -> Result<TaskPageResponse, CommandError> {
+    pagination_offset(query.page, query.page_size)?;
+    let filtered = tasks
+        .into_iter()
+        .filter(|task| task_matches_filter(task, &query.filter))
+        .map(with_available_delete_action)
+        .collect::<Vec<_>>();
+    let total = filtered.len() as u64;
+    let actual_page = clamped_page(total, query.page, query.page_size);
+    let offset = pagination_offset(actual_page, query.page_size)? as usize;
+    let items = filtered
+        .into_iter()
+        .skip(offset)
+        .take(query.page_size as usize)
+        .collect();
+    Ok(task_page_response(
+        items,
+        total,
+        actual_page,
+        query.page_size,
+    ))
+}
+
+/// 构造稳定的任务分页响应，空结果仍保留第 1 页。
+fn task_page_response(
+    items: Vec<TaskRecord>,
+    total: u64,
+    page: u64,
+    page_size: u64,
+) -> TaskPageResponse {
+    TaskPageResponse {
+        items,
+        total,
+        page,
+        page_size,
+        total_pages: total.div_ceil(page_size).max(1),
+    }
+}
+
+/// 把越过最后一页的请求收敛到当前有效页，便于删除最后一项后继续浏览。
+fn clamped_page(total: u64, page: u64, page_size: u64) -> u64 {
+    page.min(total.div_ceil(page_size).max(1))
+}
+
+/// 校验从 1 开始的分页参数，并安全计算数据库 OFFSET。
+fn pagination_offset(page: u64, page_size: u64) -> Result<u64, CommandError> {
+    if page == 0 || !(1..=100).contains(&page_size) {
+        return Err(CommandError::new(
+            "pagination_invalid",
+            "分页参数无效：页码须从 1 开始，每页最多 100 条",
+            false,
+        ));
+    }
+    let offset = page
+        .saturating_sub(1)
+        .checked_mul(page_size)
+        .ok_or_else(|| CommandError::new("pagination_invalid", "分页参数超出支持范围", false))?;
+    if offset > i64::MAX as u64 {
+        return Err(CommandError::new(
+            "pagination_invalid",
+            "分页参数超出支持范围",
+            false,
+        ));
+    }
+    Ok(offset)
 }
 
 /// 从 SQLite 快照中查找任务。
@@ -1360,27 +1513,46 @@ mod tests {
         assert!(!task.retains_audio_artifact());
     }
 
-    /// 验证只有未关联会议的失败或中断任务可由队列独立删除。
+    /// 验证所有可安全清理的终止任务都提供删除动作，活动任务始终禁止删除。
     #[test]
-    fn delete_action_is_limited_to_failed_tasks_without_meetings() {
+    fn delete_action_is_available_only_for_inactive_tasks() {
         let artifact = registered_artifact("deletable", 60);
         let mut task = new_task(&artifact, None, "standard_meeting", 3);
-        task.status = TaskStatus::Failed;
-        assert!(task_can_be_deleted(&task));
-        assert!(with_available_delete_action(task.clone())
-            .available_actions
-            .contains(&TaskAction::Delete));
+        for status in [
+            TaskStatus::Failed,
+            TaskStatus::Interrupted,
+            TaskStatus::Cancelled,
+            TaskStatus::Completed,
+        ] {
+            task.status = status;
+            task.meeting_id = Some("meeting-related".to_string());
+            assert!(task_can_be_deleted(&task));
+            assert!(with_available_delete_action(task.clone())
+                .available_actions
+                .contains(&TaskAction::Delete));
+        }
 
-        task.status = TaskStatus::Completed;
-        assert!(!task_can_be_deleted(&task));
-        task.status = TaskStatus::Failed;
-        task.meeting_id = Some("meeting-protected".to_string());
-        assert!(!task_can_be_deleted(&task));
+        for status in [
+            TaskStatus::Queued,
+            TaskStatus::Preparing,
+            TaskStatus::Uploading,
+            TaskStatus::Transcribing,
+            TaskStatus::ValidatingTranscript,
+            TaskStatus::Summarizing,
+            TaskStatus::ValidatingMinutes,
+            TaskStatus::Saving,
+            TaskStatus::RetryWait,
+            TaskStatus::CancelRequested,
+        ] {
+            task.status = status;
+            task.meeting_id = None;
+            assert!(!task_can_be_deleted(&task));
+        }
     }
 
     /// 验证后端删除函数拒绝活动任务，并实际移除失败任务快照。
     #[test]
-    fn deletes_only_failed_task_records() {
+    fn deletes_only_inactive_task_records() {
         let repository = MeetingRepository::in_memory().expect("create repository");
         let artifact = registered_artifact("delete-record", 60);
         let mut task = new_task(&artifact, None, "standard_meeting", 3);
@@ -1391,11 +1563,85 @@ mod tests {
 
         task.status = TaskStatus::Failed;
         repository.save_task(&task).expect("save failed task");
-        assert_eq!(
-            delete_task_record(&repository, &task.id).expect("delete failed task"),
-            Some(artifact.id)
-        );
+        let outcome = delete_task_record(&repository, &task.id).expect("delete failed task");
+        assert!(outcome.deleted);
+        assert_eq!(outcome.artifact_ids, vec![artifact.id.clone()]);
         assert!(repository.list_tasks().expect("list tasks").is_empty());
+
+        let mut completed = new_task(&artifact, None, "standard_meeting", 3);
+        completed.id = "completed-related".to_string();
+        completed.status = TaskStatus::Completed;
+        completed.meeting_id = Some("shared-meeting".to_string());
+        let mut active = new_task(&artifact, None, "standard_meeting", 3);
+        active.id = "active-related".to_string();
+        active.meeting_id = Some("shared-meeting".to_string());
+        repository
+            .save_tasks(&[completed.clone(), active])
+            .expect("save related tasks");
+
+        let error = delete_task_record(&repository, &completed.id)
+            .expect_err("reject deletion with active related task");
+        assert_eq!(error.code, "task_not_deletable");
+        assert_eq!(
+            repository.list_tasks().expect("list related tasks").len(),
+            2
+        );
+    }
+
+    /// 验证任务分页在筛选后计算总数，并拒绝越界分页参数。
+    #[test]
+    fn paginates_filtered_tasks_with_bounded_parameters() {
+        let artifact = registered_artifact("page-record", 60);
+        let mut tasks = Vec::new();
+        for index in 0..5 {
+            let mut task = new_task(&artifact, None, "standard_meeting", 3);
+            task.id = format!("task-{index}");
+            task.status = if index < 3 {
+                TaskStatus::Completed
+            } else {
+                TaskStatus::Failed
+            };
+            tasks.push(task);
+        }
+
+        let page = paginate_tasks(
+            tasks,
+            &TaskPageQuery {
+                filter: "completed".to_string(),
+                page: 2,
+                page_size: 2,
+            },
+        )
+        .expect("paginate tasks");
+        assert_eq!(page.total, 3);
+        assert_eq!(page.page, 2);
+        assert_eq!(page.page_size, 2);
+        assert_eq!(page.total_pages, 2);
+        assert_eq!(page.items.len(), 1);
+
+        let empty_page = paginate_tasks(
+            Vec::new(),
+            &TaskPageQuery {
+                filter: "all".to_string(),
+                page: 9,
+                page_size: 20,
+            },
+        )
+        .expect("clamp empty task page");
+        assert_eq!(empty_page.page, 1);
+        assert_eq!(empty_page.total_pages, 1);
+
+        let invalid = paginate_tasks(
+            Vec::new(),
+            &TaskPageQuery {
+                filter: "all".to_string(),
+                page: 0,
+                page_size: 101,
+            },
+        )
+        .err()
+        .expect("reject invalid page");
+        assert_eq!(invalid.code, "pagination_invalid");
     }
 
     /// 验证真实导入模块、MockProvider、纪要校验和 SQLite 保存形成完整闭环。

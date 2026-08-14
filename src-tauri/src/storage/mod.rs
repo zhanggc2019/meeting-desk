@@ -15,11 +15,20 @@ pub enum StorageError {
     LockPoisoned,
     #[error("本地记录格式无效")]
     InvalidJson(#[from] serde_json::Error),
+    #[error("分页参数无效")]
+    InvalidPagination,
 }
 
 /// 封装应用唯一的 SQLite 连接，并以互斥锁串行化事务。
 pub struct MeetingRepository {
     connection: Mutex<Connection>,
+}
+
+/// 描述一次关联记录删除的结果，并把待释放的受管音频引用交给命令层。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RelatedRecordsDeletion {
+    pub deleted: bool,
+    pub artifact_ids: Vec<String>,
 }
 
 impl MeetingRepository {
@@ -176,12 +185,84 @@ impl MeetingRepository {
         Ok(tasks)
     }
 
+    /// 在 SQLite 中按任务状态筛选并分页，同时返回筛选后的总数。
+    pub fn list_tasks_page(
+        &self,
+        filter: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<TaskRecord>, u64), StorageError> {
+        let (offset, limit) = Self::pagination_values(offset, limit)?;
+        let status_condition = match filter {
+            "active" => {
+                "json_extract(record_json, '$.status') NOT IN ('completed', 'failed', 'cancelled')"
+            }
+            "failed" => "json_extract(record_json, '$.status') IN ('failed', 'interrupted')",
+            "completed" => "json_extract(record_json, '$.status') = 'completed'",
+            _ => "1 = 1",
+        };
+        let connection = self.lock()?;
+        let total = connection.query_row(
+            &format!("SELECT COUNT(*) FROM tasks WHERE {status_condition}"),
+            [],
+            |row| row.get::<_, u64>(0),
+        )?;
+        let mut statement = connection.prepare(&format!(
+            "SELECT record_json FROM tasks WHERE {status_condition} \
+             ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2"
+        ))?;
+        let rows = statement.query_map(params![limit, offset], |row| row.get::<_, String>(0))?;
+        let mut tasks = Vec::new();
+        for row in rows {
+            tasks.push(serde_json::from_str(&row?)?);
+        }
+        Ok((tasks, total))
+    }
+
     /// 按 ID 删除单条任务快照，不影响会议记录或用户原始文件。
     pub fn delete_task(&self, id: &str) -> Result<bool, StorageError> {
         Ok(self
             .lock()?
             .execute("DELETE FROM tasks WHERE id = ?1", [id])?
             > 0)
+    }
+
+    /// 在单个事务中删除任务；有关联会议时同时清理会议正文、纪要和其他关联任务。
+    pub fn delete_task_with_related_records(
+        &self,
+        id: &str,
+    ) -> Result<RelatedRecordsDeletion, StorageError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let record_json = transaction
+            .query_row("SELECT record_json FROM tasks WHERE id = ?1", [id], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()?;
+        let Some(record_json) = record_json else {
+            transaction.commit()?;
+            return Ok(RelatedRecordsDeletion::default());
+        };
+        let task: TaskRecord = serde_json::from_str(&record_json)?;
+        let mut artifact_ids = Vec::new();
+        if let Some(meeting_id) = task.meeting_id.as_deref() {
+            let related_tasks = Self::tasks_for_meeting(&transaction, meeting_id)?;
+            for (task_id, artifact_id) in related_tasks {
+                transaction.execute("DELETE FROM tasks WHERE id = ?1", [task_id])?;
+                if !artifact_ids.contains(&artifact_id) {
+                    artifact_ids.push(artifact_id);
+                }
+            }
+            transaction.execute("DELETE FROM meetings WHERE id = ?1", [meeting_id])?;
+        } else {
+            transaction.execute("DELETE FROM tasks WHERE id = ?1", [id])?;
+            artifact_ids.push(task.artifact_id);
+        }
+        transaction.commit()?;
+        Ok(RelatedRecordsDeletion {
+            deleted: true,
+            artifact_ids,
+        })
     }
 
     /// 搜索会议标题和源文件名；空查询返回全部历史。
@@ -205,6 +286,71 @@ impl MeetingRepository {
         })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StorageError::from)
+    }
+
+    /// 在 SQLite 中搜索会议索引、纪要和逐字稿并分页，同时返回搜索后的总数。
+    pub fn search_meetings_page(
+        &self,
+        query: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Result<(Vec<MeetingListItem>, u64), StorageError> {
+        let (offset, limit) = Self::pagination_values(offset, limit)?;
+        let escaped = query
+            .trim()
+            .to_lowercase()
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("%{escaped}%");
+        let from_and_filter = "FROM meetings m JOIN transcripts t ON t.meeting_id = m.id \
+             JOIN minutes n ON n.meeting_id = m.id \
+             WHERE ?1 = '%%' OR LOWER(m.title) LIKE ?1 ESCAPE '\\' \
+             OR LOWER(m.source_name) LIKE ?1 ESCAPE '\\' \
+             OR LOWER(t.full_text) LIKE ?1 ESCAPE '\\' \
+             OR LOWER(n.minutes_json) LIKE ?1 ESCAPE '\\'";
+        let connection = self.lock()?;
+        let total = connection.query_row(
+            &format!("SELECT COUNT(*) {from_and_filter}"),
+            [pattern.as_str()],
+            |row| row.get::<_, u64>(0),
+        )?;
+        let mut statement = connection.prepare(&format!(
+            "SELECT m.id, m.title, m.source_name, m.template_id, m.created_at, m.updated_at \
+             {from_and_filter} ORDER BY m.updated_at DESC LIMIT ?2 OFFSET ?3"
+        ))?;
+        let rows = statement.query_map(params![pattern, limit, offset], |row| {
+            Ok(MeetingListItem {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                source_name: row.get(2)?,
+                template_id: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?;
+        let items = rows.collect::<Result<Vec<_>, _>>()?;
+        Ok((items, total))
+    }
+
+    /// 返回指向指定会议的已完成任务，用于分页会议列表派生处理耗时。
+    pub fn get_completed_task_for_meeting(
+        &self,
+        meeting_id: &str,
+    ) -> Result<Option<TaskRecord>, StorageError> {
+        let record_json = self
+            .lock()?
+            .query_row(
+                "SELECT record_json FROM tasks \
+                 WHERE json_extract(record_json, '$.status') = 'completed' \
+                 AND json_extract(record_json, '$.meetingId') = ?1 \
+                 ORDER BY updated_at DESC LIMIT 1",
+                [meeting_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        record_json
+            .map(|value| serde_json::from_str(&value).map_err(StorageError::from))
+            .transpose()
     }
 
     /// 读取指定会议的完整逐字稿和结构化纪要。
@@ -248,8 +394,37 @@ impl MeetingRepository {
 
     /// 删除会议、级联正文和关联任务，不接触用户原始音频。
     pub fn delete_meeting(&self, id: &str) -> Result<bool, StorageError> {
+        Ok(self.delete_meeting_with_related_tasks(id)?.deleted)
+    }
+
+    /// 在单个事务中删除会议及其全部关联任务，并返回待释放的受管音频引用。
+    pub fn delete_meeting_with_related_tasks(
+        &self,
+        id: &str,
+    ) -> Result<RelatedRecordsDeletion, StorageError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
+        let related_tasks = Self::tasks_for_meeting(&transaction, id)?;
+        let mut artifact_ids = Vec::with_capacity(related_tasks.len());
+        for (task_id, artifact_id) in related_tasks {
+            transaction.execute("DELETE FROM tasks WHERE id = ?1", [task_id])?;
+            if !artifact_ids.contains(&artifact_id) {
+                artifact_ids.push(artifact_id);
+            }
+        }
+        let deleted = transaction.execute("DELETE FROM meetings WHERE id = ?1", [id])? > 0;
+        transaction.commit()?;
+        Ok(RelatedRecordsDeletion {
+            deleted,
+            artifact_ids,
+        })
+    }
+
+    /// 读取指向指定会议的任务 ID 和 artifact ID，供事务内级联清理使用。
+    fn tasks_for_meeting(
+        transaction: &Transaction<'_>,
+        meeting_id: &str,
+    ) -> Result<Vec<(String, String)>, StorageError> {
         let task_rows = {
             let mut statement = transaction.prepare("SELECT id, record_json FROM tasks")?;
             let rows = statement.query_map([], |row| {
@@ -257,15 +432,24 @@ impl MeetingRepository {
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        let mut related = Vec::new();
         for (task_id, record_json) in task_rows {
             let task: TaskRecord = serde_json::from_str(&record_json)?;
-            if task.meeting_id.as_deref() == Some(id) {
-                transaction.execute("DELETE FROM tasks WHERE id = ?1", [task_id])?;
+            if task.meeting_id.as_deref() == Some(meeting_id) {
+                related.push((task_id, task.artifact_id));
             }
         }
-        let deleted = transaction.execute("DELETE FROM meetings WHERE id = ?1", [id])? > 0;
-        transaction.commit()?;
-        Ok(deleted)
+        Ok(related)
+    }
+
+    /// 把无符号分页参数安全转换为 SQLite 的有符号 LIMIT/OFFSET。
+    fn pagination_values(offset: u64, limit: u64) -> Result<(i64, i64), StorageError> {
+        if !(1..=100).contains(&limit) {
+            return Err(StorageError::InvalidPagination);
+        }
+        let offset = i64::try_from(offset).map_err(|_| StorageError::InvalidPagination)?;
+        let limit = i64::try_from(limit).map_err(|_| StorageError::InvalidPagination)?;
+        Ok((offset, limit))
     }
 
     /// 保存非秘密设置字符串。
@@ -384,6 +568,101 @@ mod tests {
         assert!(repository.list_tasks().expect("list tasks").is_empty());
     }
 
+    /// 验证删除成功任务会在同一事务内清除会议、逐字稿、纪要及全部关联任务。
+    #[test]
+    fn deletes_completed_task_and_all_related_records_atomically() {
+        let repository = MeetingRepository::in_memory().expect("create database");
+        repository
+            .save_completed_meeting(&fixture())
+            .expect("save meeting");
+        let mut requested = task_fixture("completed-task");
+        requested.status = TaskStatus::Completed;
+        requested.meeting_id = Some("meeting-1".to_string());
+        let mut related = task_fixture("related-task");
+        related.status = TaskStatus::Completed;
+        related.meeting_id = Some("meeting-1".to_string());
+        repository
+            .save_tasks(&[
+                requested.clone(),
+                related.clone(),
+                task_fixture("unrelated-task"),
+            ])
+            .expect("save tasks");
+
+        let outcome = repository
+            .delete_task_with_related_records(&requested.id)
+            .expect("delete completed task");
+
+        assert!(outcome.deleted);
+        assert_eq!(outcome.artifact_ids.len(), 2);
+        assert!(outcome.artifact_ids.contains(&requested.artifact_id));
+        assert!(outcome.artifact_ids.contains(&related.artifact_id));
+        assert!(repository
+            .get_meeting("meeting-1")
+            .expect("get deleted meeting")
+            .is_none());
+        let remaining = repository.list_tasks().expect("list remaining tasks");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "unrelated-task");
+    }
+
+    /// 验证会议删除会返回关联 artifact 供命令层释放，并清除关联任务。
+    #[test]
+    fn deletes_meeting_with_related_tasks_and_reports_artifacts() {
+        let repository = MeetingRepository::in_memory().expect("create database");
+        repository
+            .save_completed_meeting(&fixture())
+            .expect("save meeting");
+        let mut task = task_fixture("meeting-task");
+        task.status = TaskStatus::Completed;
+        task.meeting_id = Some("meeting-1".to_string());
+        repository.save_task(&task).expect("save related task");
+
+        let outcome = repository
+            .delete_meeting_with_related_tasks("meeting-1")
+            .expect("delete meeting records");
+
+        assert!(outcome.deleted);
+        assert_eq!(outcome.artifact_ids, vec![task.artifact_id]);
+        assert!(repository.list_tasks().expect("list tasks").is_empty());
+    }
+
+    /// 验证关联任务数据损坏时整个删除事务回滚，不留下半清理状态。
+    #[test]
+    fn rolls_back_related_record_deletion_on_invalid_task_data() {
+        let repository = MeetingRepository::in_memory().expect("create database");
+        repository
+            .save_completed_meeting(&fixture())
+            .expect("save meeting");
+        let mut task = task_fixture("completed-task");
+        task.status = TaskStatus::Completed;
+        task.meeting_id = Some("meeting-1".to_string());
+        repository.save_task(&task).expect("save task");
+        repository
+            .lock()
+            .expect("lock database")
+            .execute(
+                "INSERT INTO tasks(id, record_json, updated_at) VALUES (?1, ?2, ?3)",
+                params!["invalid-task", "{invalid", "2026-08-14T00:00:00Z"],
+            )
+            .expect("save invalid task fixture");
+
+        let error = repository
+            .delete_task_with_related_records(&task.id)
+            .expect_err("reject invalid related data");
+
+        assert!(matches!(error, StorageError::InvalidJson(_)));
+        assert!(repository
+            .get_meeting("meeting-1")
+            .expect("get meeting after rollback")
+            .is_some());
+        let list_error = repository
+            .list_tasks()
+            .err()
+            .expect("invalid task remains after rollback");
+        assert!(list_error.to_string().contains("本地记录格式无效"));
+    }
+
     /// 验证设置写入不会要求任何秘密字段。
     #[test]
     fn stores_public_setting() {
@@ -413,5 +692,58 @@ mod tests {
         assert!(stored
             .iter()
             .all(|task| task.batch_id.as_deref() == Some("batch-test")));
+    }
+
+    /// 验证任务状态筛选、总数和 LIMIT/OFFSET 由存储层统一返回。
+    #[test]
+    fn lists_filtered_task_page_with_total() {
+        let repository = MeetingRepository::in_memory().expect("create database");
+        let tasks = (0..5)
+            .map(|index| {
+                let mut task = task_fixture(&format!("task-{index}"));
+                task.status = if index < 3 {
+                    TaskStatus::Completed
+                } else {
+                    TaskStatus::Failed
+                };
+                task.updated_at = format!("2026-08-14T00:00:0{index}Z");
+                task
+            })
+            .collect::<Vec<_>>();
+        repository.save_tasks(&tasks).expect("save tasks");
+
+        let (page, total) = repository
+            .list_tasks_page("completed", 2, 2)
+            .expect("list task page");
+
+        assert_eq!(total, 3);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].id, "task-0");
+    }
+
+    /// 验证会议分页在数据库中搜索逐字稿，并返回搜索后的准确总数。
+    #[test]
+    fn searches_meeting_page_with_total() {
+        let repository = MeetingRepository::in_memory().expect("create database");
+        for index in 0..3 {
+            let mut meeting = fixture();
+            meeting.id = format!("meeting-{index}");
+            meeting.title = format!("会议 {index}");
+            meeting.transcript = if index < 2 {
+                format!("包含分页关键字 needle {index}")
+            } else {
+                "不匹配的正文".to_string()
+            };
+            repository
+                .save_completed_meeting(&meeting)
+                .expect("save meeting");
+        }
+
+        let (page, total) = repository
+            .search_meetings_page("needle", 0, 1)
+            .expect("search meeting page");
+
+        assert_eq!(total, 2);
+        assert_eq!(page.len(), 1);
     }
 }

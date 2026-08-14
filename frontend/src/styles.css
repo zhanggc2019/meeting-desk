@@ -258,6 +258,8 @@ select:focus-visible,
 .button.table-action { min-height: 30px; padding: 0 9px; background: var(--surface); border-color: var(--line); font-size: 12px; }
 .button.table-action.delete-action { color: #b42318; background: #fff7f6; border-color: #f0b7b2; }
 .button.table-action.delete-action:hover:not(:disabled) { background: #feeceb; border-color: #dc827a; }
+.delete-icon-action { color: #b42318; }
+.delete-icon-action:hover:not(:disabled) { background: #feeceb; }
 
 .icon-button {
   display: inline-grid;
@@ -522,6 +524,11 @@ progress { display: block; width: 95px; height: 3px; margin-top: 5px; accent-col
 .meeting-table-wrap { overflow-x: auto; }
 .meeting-table-wrap table { min-width: 900px; }
 
+.pagination { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 52px; margin-top: 12px; padding: 8px 2px; }
+.pagination-summary { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.pagination-actions { display: flex; align-items: center; gap: 8px; }
+.pagination-actions .button { min-width: 90px; }
+
 .empty-state, .loading-state { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 290px; padding: 40px; color: var(--muted); text-align: center; }
 .empty-state h2 { margin: 14px 0 5px; color: var(--ink); font-size: 18px; }
 .empty-state p { max-width: 420px; margin: 0 0 18px; line-height: 1.6; }
@@ -636,6 +643,9 @@ progress { display: block; width: 95px; height: 3px; margin-top: 5px; accent-col
 .local-model-guide p { margin: 4px 0 0; font-size: 11px; line-height: 1.55; }
 .local-model-guide code { overflow-wrap: anywhere; color: var(--ink); font-family: "Cascadia Code", Consolas, monospace; }
 .local-model-guide .button { flex: 0 0 auto; min-height: 32px; padding: 0 10px; font-size: 11px; }
+.model-source-list { display: flex; flex-wrap: wrap; gap: 5px 18px; margin-top: 10px; color: var(--muted); font-size: 11px; }
+.model-download-command { overflow: auto; max-height: 150px; margin: 10px 0 7px; padding: 10px 11px; color: #31414d; background: #f4f7f9; border: 1px solid #e0e6ea; border-radius: 6px; font: 10px/1.6 "Cascadia Code", Consolas, monospace; white-space: pre; }
+.model-download-command code { color: inherit; font: inherit; }
 .model-path-picker { display: flex; align-items: center; gap: 8px; }
 .model-path-picker input { min-width: 0; }
 .model-path-picker .button { flex: 0 0 auto; min-height: 37px; }
@@ -655,6 +665,7 @@ progress { display: block; width: 95px; height: 3px; margin-top: 5px; accent-col
 .secret-status { color: var(--muted); font-size: 12px; }
 .secret-status.configured { color: var(--success); }
 .connection-test-button { display: inline-flex; align-items: center; gap: 6px; }
+.connection-test-note { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
 .connection-result { display: flex; align-items: flex-start; gap: 7px; margin-top: 10px; padding: 9px 11px; border-radius: 7px; font-size: 12px; line-height: 1.5; }
 .connection-result.success { color: #3e6858; background: var(--success-soft); border: 1px solid #d5e7de; }
 .connection-result.error { color: #704a35; background: #faf4ec; border: 1px solid #eadccc; }
@@ -708,6 +719,8 @@ progress { display: block; width: 95px; height: 3px; margin-top: 5px; accent-col
   .local-model-guide .button { align-self: flex-start; }
   .model-path-picker { align-items: stretch; flex-wrap: wrap; }
   .model-path-picker input { flex-basis: 100%; }
+  .pagination { align-items: stretch; flex-direction: column; }
+  .pagination-actions .button { flex: 1; }
 }
 
 @keyframes page-enter { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }

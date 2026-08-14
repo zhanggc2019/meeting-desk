@@ -77,6 +77,25 @@ export interface TaskQuery {
   filter: "all" | "active" | "failed" | "completed";
 }
 
+export interface TaskPageQuery extends TaskQuery {
+  page: number;
+  pageSize: number;
+}
+
+export interface MeetingPageQuery {
+  query: string;
+  page: number;
+  pageSize: number;
+}
+
+export interface PageResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
 export interface MeetingSummary {
   id: string;
   title: string | null;
