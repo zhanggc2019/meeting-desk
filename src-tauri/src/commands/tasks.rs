@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{
     collections::{HashMap, HashSet},
     sync::Mutex,
@@ -27,6 +27,11 @@ use crate::providers::{
 };
 use crate::secrets::{self, SecretKind};
 use crate::storage::{MeetingRepository, RelatedRecordsDeletion};
+
+const DEFAULT_ESTIMATE_RATIO_NUMERATOR: u64 = 3;
+const DEFAULT_ESTIMATE_RATIO_DENOMINATOR: u64 = 2;
+const DEFAULT_ESTIMATE_OVERHEAD_MS: u64 = 120_000;
+const MAX_ESTIMATION_SAMPLES: usize = 9;
 
 /// 表示任务列表的前端筛选条件。
 #[derive(Debug, Deserialize)]
@@ -215,12 +220,11 @@ pub fn create_processing_tasks(
             false,
         ));
     }
-    let active_artifacts = state
-        .repository
-        .list_tasks()?
-        .into_iter()
+    let existing_tasks = state.repository.list_tasks()?;
+    let active_artifacts = existing_tasks
+        .iter()
         .filter(|task| task.retains_audio_artifact())
-        .map(|task| task.artifact_id)
+        .map(|task| task.artifact_id.clone())
         .collect::<HashSet<_>>();
     if artifact_ids.iter().any(|id| active_artifacts.contains(id)) {
         return Err(CommandError::new(
@@ -244,12 +248,14 @@ pub fn create_processing_tasks(
     let tasks = artifacts
         .into_iter()
         .map(|artifact| {
-            let task = new_task(
+            let mut task = new_task(
                 &artifact,
                 batch_id.clone(),
                 &template_id,
                 providers.max_attempts,
             );
+            task.estimated_processing_ms =
+                estimate_processing_duration(artifact.duration_ms, &existing_tasks);
             (task, artifact)
         })
         .collect::<Vec<_>>();
@@ -276,6 +282,8 @@ pub fn list_processing_tasks_page(
     state: State<'_, AppState>,
     query: TaskPageQuery,
 ) -> Result<TaskPageResponse, CommandError> {
+    let operation_started = Instant::now();
+    let has_filter = !query.filter.trim().is_empty() && query.filter != "all";
     let offset = pagination_offset(query.page, query.page_size)?;
     let (mut tasks, total) =
         state
@@ -289,7 +297,7 @@ pub fn list_processing_tasks_page(
             .list_tasks_page(&query.filter, actual_offset, query.page_size)?
             .0;
     }
-    Ok(task_page_response(
+    let response = task_page_response(
         tasks
             .into_iter()
             .map(with_available_delete_action)
@@ -297,7 +305,17 @@ pub fn list_processing_tasks_page(
         total,
         actual_page,
         query.page_size,
-    ))
+    );
+    info!(
+        "任务分页加载完成: has_filter={}, page={}, page_size={}, result_count={}, total={}, elapsed_ms={}",
+        has_filter,
+        response.page,
+        response.page_size,
+        response.items.len(),
+        response.total,
+        operation_started.elapsed().as_millis(),
+    );
+    Ok(response)
 }
 
 /// 请求取消正在运行的任务，并立即返回可见的 cancel_requested 状态。
@@ -312,6 +330,10 @@ pub fn cancel_processing_task(
         .map_err(|_| CommandError::new("task_state_unavailable", "任务状态不可用", true))?;
     let mut task = find_task(&state.repository, &task_id)?;
     if task.status.is_terminal() {
+        info!(
+            "忽略终态任务取消请求: task_id={}, status={:?}",
+            task.id, task.status,
+        );
         return Ok(task);
     }
     if task.status == TaskStatus::Saving {
@@ -337,6 +359,10 @@ pub fn cancel_processing_task(
         mark_cancelled(&mut task);
         state.repository.save_task(&task)?;
     }
+    info!(
+        "任务取消请求已处理: task_id={}, status={:?}",
+        task.id, task.status,
+    );
     Ok(task)
 }
 
@@ -386,6 +412,10 @@ pub fn retry_processing_task(
         task.available_actions = vec![TaskAction::OpenMeeting];
         task.updated_at = Utc::now().to_rfc3339();
         state.repository.save_task(&task)?;
+        info!(
+            "任务暂存清理重试完成: task_id={}, status=completed",
+            task.id,
+        );
         return Ok(task);
     }
     ensure_retry_available(&mut task, &state.repository)?;
@@ -413,6 +443,10 @@ pub fn retry_processing_task(
     task.updated_at = Utc::now().to_rfc3339();
     state.repository.save_task(&task)?;
     start_task(&state, task.clone(), artifact, providers)?;
+    info!(
+        "任务重试已启动: task_id={}, attempt={}, max_attempts={}",
+        task.id, task.attempt, task.max_attempts,
+    );
     Ok(task)
 }
 
@@ -428,14 +462,20 @@ pub fn delete_processing_task(
         .map_err(|_| CommandError::new("task_state_unavailable", "任务状态不可用", true))?;
     let outcome = delete_task_record(&state.repository, &task_id)?;
     if outcome.deleted {
+        let artifact_count = outcome.artifact_ids.len();
         if let Ok(mut cancellations) = state.cancellations.lock() {
             cancellations.remove(&task_id);
         }
         for artifact_id in outcome.artifact_ids {
             cleanup_unused_artifact(&state, &artifact_id);
         }
+        info!(
+            "任务删除完成: task_id={}, deleted=true, artifact_cleanup_count={}",
+            task_id, artifact_count,
+        );
         return Ok(true);
     }
+    info!("任务删除完成: task_id={}, deleted=false", task_id);
     Ok(false)
 }
 
@@ -470,6 +510,7 @@ pub async fn reselect_processing_task(
         .add_filter("音频和视频文件", &["wav", "mp3", "m4a", "mp4", "mov"])
         .blocking_pick_file();
     let Some(path) = selected.and_then(|value| value.into_path().ok()) else {
+        info!("任务重选文件已取消: task_id={}", task_id);
         return find_task(&state.repository, &task_id);
     };
     let candidates = crate::commands::ingest::import_paths(
@@ -497,6 +538,18 @@ pub async fn reselect_processing_task(
     if result.is_err() {
         cleanup_unused_artifact(&state, &artifact_id);
     }
+    match &result {
+        Ok(task) => info!(
+            "任务重选文件后已重启: task_id={}, artifact_id={}, attempt={}",
+            task.id, task.artifact_id, task.attempt,
+        ),
+        Err(error) => log_error!(
+            "任务重选文件失败: task_id={}, error_code={}, retryable={}",
+            task_id,
+            error.code,
+            error.retryable,
+        ),
+    }
     result
 }
 
@@ -504,12 +557,15 @@ pub async fn reselect_processing_task(
 pub fn recover_interrupted_tasks(
     repository: &MeetingRepository,
 ) -> Result<(), crate::storage::StorageError> {
+    let mut cancelled_count = 0usize;
+    let mut interrupted_count = 0usize;
     for mut task in repository.list_tasks()? {
         if task.status == TaskStatus::CancelRequested {
             let last_active_at = task.updated_at.clone();
             finish_processing_attempt_at(&mut task, &last_active_at);
             mark_cancelled(&mut task);
             repository.save_task(&task)?;
+            cancelled_count = cancelled_count.saturating_add(1);
         } else if !task.status.is_terminal() && task.status != TaskStatus::Interrupted {
             let last_active_at = task.updated_at.clone();
             finish_processing_attempt_at(&mut task, &last_active_at);
@@ -530,8 +586,13 @@ pub fn recover_interrupted_tasks(
             }
             task.updated_at = Utc::now().to_rfc3339();
             repository.save_task(&task)?;
+            interrupted_count = interrupted_count.saturating_add(1);
         }
     }
+    info!(
+        "应用重启任务恢复完成: cancelled_count={}, interrupted_count={}",
+        cancelled_count, interrupted_count,
+    );
     Ok(())
 }
 
@@ -577,7 +638,8 @@ fn restart_with_reselected_artifact(
         ));
     }
     ensure_retry_available(&mut task, &state.repository)?;
-    let artifact_in_use = state.repository.list_tasks()?.into_iter().any(|other| {
+    let existing_tasks = state.repository.list_tasks()?;
+    let artifact_in_use = existing_tasks.iter().any(|other| {
         other.id != task_id && other.artifact_id == artifact_id && other.retains_audio_artifact()
     });
     if artifact_in_use {
@@ -601,6 +663,9 @@ fn restart_with_reselected_artifact(
     let providers = load_processing_providers(state.inner())?;
     task.artifact_id = artifact.id.clone();
     task.display_name = artifact.display_name.clone();
+    task.source_duration_ms = artifact.duration_ms;
+    task.estimated_processing_ms =
+        estimate_processing_duration(artifact.duration_ms, &existing_tasks);
     task.status = TaskStatus::Queued;
     task.attempt = task.attempt.saturating_add(1);
     task.progress = Some(0.0);
@@ -652,8 +717,59 @@ fn new_task(
         updated_at: now,
         processing_started_at: None,
         processing_duration_ms: Some(0),
+        source_duration_ms: artifact.duration_ms,
+        estimated_processing_ms: estimate_processing_duration(artifact.duration_ms, &[]),
         available_actions: vec![TaskAction::Cancel],
     }
+}
+
+/// 根据最近已完成任务的真实处理速度估算新任务总耗时，无样本时使用保守默认值。
+fn estimate_processing_duration(
+    source_duration_ms: Option<u64>,
+    history: &[TaskRecord],
+) -> Option<u64> {
+    let source_duration_ms = source_duration_ms.filter(|duration| *duration > 0)?;
+    let mut estimates = history
+        .iter()
+        .filter(|task| task.status == TaskStatus::Completed)
+        .filter_map(|task| {
+            let historical_source = task.source_duration_ms.filter(|duration| *duration > 0)?;
+            let historical_processing = task
+                .processing_duration_ms
+                .filter(|duration| *duration > 0)?;
+            Some(scale_duration(
+                source_duration_ms,
+                historical_processing,
+                historical_source,
+            ))
+        })
+        .take(MAX_ESTIMATION_SAMPLES)
+        .collect::<Vec<_>>();
+    if estimates.is_empty() {
+        return Some(
+            source_duration_ms
+                .saturating_mul(DEFAULT_ESTIMATE_RATIO_NUMERATOR)
+                .checked_div(DEFAULT_ESTIMATE_RATIO_DENOMINATOR)
+                .unwrap_or(source_duration_ms)
+                .saturating_add(DEFAULT_ESTIMATE_OVERHEAD_MS),
+        );
+    }
+    estimates.sort_unstable();
+    let middle = estimates.len() / 2;
+    if estimates.len() % 2 == 1 {
+        Some(estimates[middle])
+    } else {
+        Some(estimates[middle - 1].saturating_add(estimates[middle]) / 2)
+    }
+}
+
+/// 以扩大整数精度的方式按历史处理比例缩放录音时长，并在溢出时饱和到 u64 上限。
+fn scale_duration(source_duration_ms: u64, numerator: u64, denominator: u64) -> u64 {
+    let scaled = (source_duration_ms as u128)
+        .saturating_mul(numerator as u128)
+        .checked_div(denominator as u128)
+        .unwrap_or(source_duration_ms as u128);
+    scaled.min(u64::MAX as u128) as u64
 }
 
 /// 聚合后台任务共享依赖，保持并发边界和函数签名清晰。
@@ -727,7 +843,7 @@ fn spawn_registered_task(
             .await
             .is_err()
         {
-            eprintln!("task_terminal_state_persist_failed");
+            log_error!("task_terminal_state_persist_failed retryable=true");
         }
     });
 }
@@ -785,12 +901,11 @@ async fn run_task(
         mark_cancelled(&mut task);
     } else if let Err(mut error) = result {
         log_error!(
-            "任务执行失败: task_id={}, code={}, retryable={}, http_status={:?}, message={}",
+            "任务执行失败: task_id={}, code={}, retryable={}, http_status={:?}",
             task.id,
             error.code,
             error.retryable,
             error.http_status,
-            error.safe_message,
         );
         task.status = TaskStatus::Failed;
         task.progress = None;
@@ -849,9 +964,10 @@ async fn run_provider_pipeline(
     token: CancellationToken,
     task_gate: &Arc<Mutex<()>>,
 ) -> Result<(), SafeTaskError> {
+    let pipeline_started = Instant::now();
     info!(
-        "开始执行处理流水线: task_id={}, artifact_id={}, file_size_bytes={}, attempt={}",
-        task.id, artifact.id, artifact.byte_length, task.attempt,
+        "开始执行处理流水线: task_id={}, artifact_id={}, file_size_bytes={}, source_duration_ms={:?}, attempt={}",
+        task.id, artifact.id, artifact.byte_length, artifact.duration_ms, task.attempt,
     );
 
     // 阶段 1：准备 / 文件检查
@@ -913,6 +1029,7 @@ async fn run_provider_pipeline(
         token.clone(),
         Duration::from_millis(providers.transcription_timeout_ms),
     );
+    let transcription_started = Instant::now();
     let transcript_result = providers
         .transcription
         .transcribe(
@@ -925,19 +1042,32 @@ async fn run_provider_pipeline(
         )
         .await;
     match &transcript_result {
-        Ok(t) => info!("转写完成: task_id={}, text_len={}", task.id, t.text.len()),
+        Ok(t) => info!(
+            "转写完成: task_id={}, text_len={}, segment_count={}, duration_ms={:?}, elapsed_ms={}",
+            task.id,
+            t.text.len(),
+            t.segments.len(),
+            t.duration_ms,
+            transcription_started.elapsed().as_millis(),
+        ),
         Err(e) => log_error!(
-            "转写失败: task_id={}, code={}, retryable={}, http_status={:?}, message={}",
+            "转写失败: task_id={}, code={}, retryable={}, http_status={:?}, elapsed_ms={}",
             task.id,
             e.code,
             e.retryable,
             e.http_status,
-            e.safe_message,
+            transcription_started.elapsed().as_millis(),
         ),
     }
     let transcript = transcript_result.map_err(provider_error)?;
 
     // 阶段 3：校验转写结果
+    info!(
+        "[阶段3/6] 校验转写结果: task_id={}, text_len={}, segment_count={}",
+        task.id,
+        transcript.text.len(),
+        transcript.segments.len(),
+    );
     update_task(
         repository,
         task,
@@ -976,6 +1106,7 @@ async fn run_provider_pipeline(
         token.clone(),
         Duration::from_millis(providers.minutes_timeout_ms),
     );
+    let minutes_started = Instant::now();
     let candidate_result = providers
         .minutes
         .generate_candidate(
@@ -985,17 +1116,27 @@ async fn run_provider_pipeline(
         )
         .await;
     match &candidate_result {
-        Ok(_) => info!("LLM 会议纪要生成完成: task_id={}", task.id),
+        Ok(_) => info!(
+            "LLM 会议纪要生成完成: task_id={}, elapsed_ms={}",
+            task.id,
+            minutes_started.elapsed().as_millis(),
+        ),
         Err(e) => log_error!(
-            "LLM 会议纪要生成失败: task_id={}, code={}, message={}",
+            "LLM 会议纪要生成失败: task_id={}, code={}, retryable={}, http_status={:?}, elapsed_ms={}",
             task.id,
             e.code,
-            e.safe_message,
+            e.retryable,
+            e.http_status,
+            minutes_started.elapsed().as_millis(),
         ),
     }
     let candidate = candidate_result.map_err(provider_error)?;
 
     // 阶段 5：校验会议纪要 Schema
+    info!(
+        "[阶段5/6] 校验会议纪要结构: task_id={}, schema_version={}",
+        task.id, MEETING_MINUTES_SCHEMA_VERSION,
+    );
     update_task(
         repository,
         task,
@@ -1012,6 +1153,13 @@ async fn run_provider_pipeline(
         ValidationOptions::default(),
     )
     .map_err(minutes_error)?;
+    info!(
+        "[阶段5/6] 会议纪要结构校验完成: task_id={}, topic_count={}, decision_count={}, action_item_count={}",
+        task.id,
+        minutes.topics.len(),
+        minutes.decisions.len(),
+        minutes.action_items.len(),
+    );
     if token.is_cancelled() {
         return Err(cancelled_error());
     }
@@ -1056,8 +1204,10 @@ async fn run_provider_pipeline(
     task.updated_at = Utc::now().to_rfc3339();
 
     info!(
-        "处理流水线全部完成: task_id={}, status=completed, meeting_id={:?}",
-        task.id, task.meeting_id,
+        "处理流水线全部完成: task_id={}, status=completed, meeting_id={:?}, elapsed_ms={}",
+        task.id,
+        task.meeting_id,
+        pipeline_started.elapsed().as_millis(),
     );
     Ok(())
 }
@@ -1435,6 +1585,83 @@ mod tests {
         }
     }
 
+    /// 构造带录音时长的已完成任务，用于验证历史处理速度估算。
+    fn completed_estimation_sample(
+        artifact: &RegisteredArtifact,
+        source_duration_ms: u64,
+        processing_duration_ms: u64,
+    ) -> TaskRecord {
+        let mut task = new_task(artifact, None, "standard_meeting", 3);
+        task.status = TaskStatus::Completed;
+        task.source_duration_ms = Some(source_duration_ms);
+        task.processing_duration_ms = Some(processing_duration_ms);
+        task
+    }
+
+    /// 验证新任务会保存源录音时长，并在没有历史样本时使用保守默认估算。
+    #[test]
+    fn new_task_persists_source_duration_and_default_estimate() {
+        let mut artifact = registered_artifact("duration", 60);
+        artifact.duration_ms = Some(3_600_000);
+
+        let task = new_task(&artifact, None, "standard_meeting", 3);
+
+        assert_eq!(task.source_duration_ms, Some(3_600_000));
+        assert_eq!(task.estimated_processing_ms, Some(5_520_000));
+    }
+
+    /// 验证最近完成任务的处理中位速度会用于当前录音估算。
+    #[test]
+    fn estimates_processing_duration_from_completed_history_median() {
+        let artifact = registered_artifact("history", 60);
+        let samples = vec![
+            completed_estimation_sample(&artifact, 600_000, 300_000),
+            completed_estimation_sample(&artifact, 1_200_000, 1_800_000),
+            completed_estimation_sample(&artifact, 2_400_000, 2_400_000),
+        ];
+
+        assert_eq!(
+            estimate_processing_duration(Some(1_800_000), &samples),
+            Some(1_800_000)
+        );
+    }
+
+    /// 验证失败、零时长和缺少时长的历史记录不会污染估算结果。
+    #[test]
+    fn estimate_ignores_invalid_history_samples() {
+        let artifact = registered_artifact("invalid-history", 60);
+        let valid = completed_estimation_sample(&artifact, 600_000, 900_000);
+        let mut failed = completed_estimation_sample(&artifact, 600_000, 60_000);
+        failed.status = TaskStatus::Failed;
+        let zero_source = completed_estimation_sample(&artifact, 0, 60_000);
+        let mut missing_source = completed_estimation_sample(&artifact, 600_000, 60_000);
+        missing_source.source_duration_ms = None;
+
+        assert_eq!(
+            estimate_processing_duration(
+                Some(1_200_000),
+                &[valid, failed, zero_source, missing_source],
+            ),
+            Some(1_800_000)
+        );
+    }
+
+    /// 验证旧版任务 JSON 缺少新增估算字段时仍可正常读取。
+    #[test]
+    fn legacy_task_json_defaults_estimation_fields() {
+        let artifact = registered_artifact("legacy-estimate", 60);
+        let task = new_task(&artifact, None, "standard_meeting", 3);
+        let mut value = serde_json::to_value(task).expect("serialize task");
+        let object = value.as_object_mut().expect("task object");
+        object.remove("sourceDurationMs");
+        object.remove("estimatedProcessingMs");
+
+        let restored: TaskRecord = serde_json::from_value(value).expect("deserialize legacy task");
+
+        assert_eq!(restored.source_duration_ms, None);
+        assert_eq!(restored.estimated_processing_ms, None);
+    }
+
     /// Injects the same deterministic mock behind both production provider interfaces.
     fn mock_processing_providers() -> ProcessingProviders {
         let candidate = json!({
@@ -1447,7 +1674,13 @@ mod tests {
             "topics": [],
             "conclusions": [],
             "decisions": [],
-            "actionItems": [],
+            "actionItems": [{
+                "description": "验证本地处理闭环。",
+                "owner": "speaker_1",
+                "dueDateText": "明天完成",
+                "dueDate": "2099-01-01",
+                "evidenceSegmentIds": []
+            }],
             "risksAndIssues": []
         });
         let provider = Arc::new(
@@ -1717,6 +1950,18 @@ mod tests {
             .expect("meeting detail");
         assert!(detail.transcript.contains("Mock Provider"));
         assert_eq!(detail.minutes["schemaVersion"], "1.0.0");
+        assert_eq!(
+            detail.minutes["actionItems"][0]["owner"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            detail.minutes["actionItems"][0]["dueDateText"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            detail.minutes["actionItems"][0]["dueDate"],
+            serde_json::Value::Null
+        );
         assert_eq!(
             fs::read_dir(staging_root.path())
                 .expect("staging exists")

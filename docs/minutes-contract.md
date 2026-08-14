@@ -155,7 +155,9 @@ JSON Schema 无法证明内容没有幻觉。Phase 2 必须在 Schema 校验后�
 8. 空白字符串、未知占位词、未知枚举、额外属性、重复条目被拒绝或由确定性规范化步骤处理；不能用第二次 LLM 调用“修正”来源事实。
 9. `decisions` 的证据必须包含明确确认语义；自动化只能做有限启发式检查，最终防线仍是 Prompt、样例测试和人工可追溯证据。没有把握时降级到 `risksAndIssues(kind="issue")` 或省略，不能升级为决策。
 
-语义校验失败使用稳定、无正文的错误细分，例如 `invalid_evidence_reference`、`context_field_mismatch`、`inferred_identity_rejected`、`ambiguous_due_date`，对外统一映射到安全的 `schema_validation_failed` 或 Lead 统一的业务错误。错误对象只包含 JSON Pointer、错误码和安全消息，不包含实际字段值、原文或模型响应。
+模型候选的语义校验采用确定性降级，不能因为单个可选事实无法证明而丢弃整份已经生成的纪要：受保护上下文始终由可信请求覆盖；悬空或缺失 evidence 的可选条目直接移除；无法证明的 `owner`、`dueDateText` 和 `dueDate` 置为 `null`；未明确确认或仅有低置信度证据的结论、决策、待办直接移除。JSON 无法解析、Schema 版本错误、required 字段缺失、类型错误、未知字段和输入 transcript 无效等不可修复结构问题仍必须失败。
+
+严格复核已持久化值时，语义校验失败使用稳定、无正文的错误细分，例如 `invalid_evidence_reference`、`context_field_mismatch`、`inferred_identity_rejected`、`ambiguous_due_date`。错误对象只包含 JSON Pointer、错误码和安全消息，不包含实际字段值、原文或模型响应。
 
 ## 5. Prompt 分层与防幻觉规则
 
@@ -192,7 +194,7 @@ Prompt 模板、完整 transcript、模型输出和修复请求均属于敏感�
 - 文本模式只接受一个根 JSON object。Phase 2 可兼容“仅一个 JSON 代码围栏且围栏外只有空白”的响应；不得用正则从说明文字中捞取局部 JSON。
 - JSON parse、Schema 或语义校验必须受 operation deadline 和 cancellation 控制。
 - 可配置至多一次**结构修复**，且仅用于 JSON 语法/类型/required 字段问题；必须满足 Provider replay-safety、总超时和重试预算。修复 Prompt 只传目标 Schema、安全的错误路径及必要输入，仍不得记录正文。
-- 身份、会议时间、负责人、截止日期、证据不匹配等语义错误不得通过模型修复；使用确定性清空/重算或拒绝结果。
+- 身份、会议时间、负责人、截止日期、证据不匹配等语义错误不得通过模型修复；模型候选使用确定性覆盖、清空、重算或移除条目，严格复核已持久化值时才拒绝不一致结果。
 - 修复失败返回 `schema_validation_failed`，不得保存未校验 JSON，也不得以 `validation.valid=false` 的 envelope 冒充成功。
 
 ## 6. Transcript 特殊情况

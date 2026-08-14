@@ -1,4 +1,7 @@
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use serde::Deserialize;
 use tauri::{AppHandle, State};
@@ -134,6 +137,17 @@ pub fn save_provider_settings(
     let serialized = serde_json::to_string(&public)
         .map_err(|_| CommandError::new("settings_invalid", "无法保存本地配置", false))?;
     state.repository.set_setting(SETTINGS_KEY, &serialized)?;
+    log::info!(
+        target: "app.settings",
+        "provider_settings_saved transcription_preset={} transcription_model={} transcription_ready={} minutes_preset={} minutes_model={} minutes_ready={} new_minutes_credential={}",
+        public.transcription.preset_id,
+        public.transcription.model,
+        public.transcription.ready,
+        public.minutes.preset_id,
+        public.minutes.model,
+        public.minutes.ready,
+        has_new_secret(&input.minutes),
+    );
     Ok(public)
 }
 
@@ -151,6 +165,12 @@ pub fn delete_provider_secret(
     };
     let binding_id = config::credential_binding_id(&provider);
     secrets::delete_secret_for_binding(secret_kind, &binding_id).map_err(|_| credential_error())?;
+    log::info!(
+        target: "app.settings",
+        "provider_credential_deleted target={} preset={}",
+        kind,
+        provider.preset_id,
+    );
     Ok(true)
 }
 
@@ -161,6 +181,7 @@ pub async fn test_provider_connection(
     target: String,
     input: Option<ProviderSettingsInput>,
 ) -> Result<ProviderConnectionResult, CommandError> {
+    let operation_started = Instant::now();
     let settings = load_evaluated_settings(state.inner())?;
     let (saved_provider, provider_target, secret_kind) = match target.as_str() {
         "transcription" => (
@@ -196,6 +217,14 @@ pub async fn test_provider_connection(
         )?,
         None => saved_provider,
     };
+    log::info!(
+        target: "app.settings",
+        "provider_connection_test_started target={} preset={} model={} draft_config={}",
+        target,
+        provider.preset_id,
+        provider.model,
+        input.is_some(),
+    );
     if provider.preset_id == config::PRESET_LOCAL_FUNASR {
         let local = LocalFunAsrProvider::discover_with_model_directory(
             provider.model.clone(),
@@ -203,18 +232,45 @@ pub async fn test_provider_connection(
                 .then(|| provider.local_model_path.clone().into()),
         );
         return Ok(match local.check_runtime(Duration::from_secs(120)).await {
-            Ok(()) => ProviderConnectionResult {
-                ok: true,
-                safe_message: "本地 SenseVoiceSmall、FSMN-VAD 模型与 FunASR 运行环境可用"
-                    .to_string(),
-            },
-            Err(error) => ProviderConnectionResult {
-                ok: false,
-                safe_message: error.safe_message,
-            },
+            Ok(()) => {
+                log::info!(
+                    target: "app.settings",
+                    "provider_connection_test_completed target={} preset={} ok=true elapsed_ms={}",
+                    target,
+                    provider.preset_id,
+                    operation_started.elapsed().as_millis(),
+                );
+                ProviderConnectionResult {
+                    ok: true,
+                    safe_message: "本地 SenseVoiceSmall、FSMN-VAD 模型与 FunASR 运行环境可用"
+                        .to_string(),
+                }
+            }
+            Err(error) => {
+                log::warn!(
+                    target: "app.settings",
+                    "provider_connection_test_completed target={} preset={} ok=false error_code={} retryable={} elapsed_ms={}",
+                    target,
+                    provider.preset_id,
+                    error.code,
+                    error.retryable,
+                    operation_started.elapsed().as_millis(),
+                );
+                ProviderConnectionResult {
+                    ok: false,
+                    safe_message: error.safe_message,
+                }
+            }
         });
     }
     if provider_target != ProviderTarget::Minutes {
+        log::warn!(
+            target: "app.settings",
+            "provider_connection_test_completed target={} preset={} ok=false error_code=connection_test_unsupported elapsed_ms={}",
+            target,
+            provider.preset_id,
+            operation_started.elapsed().as_millis(),
+        );
         return Ok(ProviderConnectionResult {
             ok: false,
             safe_message: "当前在线转写 Provider 不支持此连接测试".to_string(),
@@ -237,6 +293,13 @@ pub async fn test_provider_connection(
         None => None,
     };
     let Some(api_key) = api_key else {
+        log::warn!(
+            target: "app.settings",
+            "provider_connection_test_completed target={} preset={} ok=false error_code=credential_missing elapsed_ms={}",
+            target,
+            provider.preset_id,
+            operation_started.elapsed().as_millis(),
+        );
         return Ok(ProviderConnectionResult {
             ok: false,
             safe_message: "请先保存 API Key".to_string(),
@@ -244,15 +307,35 @@ pub async fn test_provider_connection(
     };
     let adapter = match build_minutes_provider(&provider) {
         Ok(value) => value,
-        Err(error) => return Ok(failed_connection_result(&error)),
+        Err(error) => {
+            log::warn!(
+                target: "app.settings",
+                "provider_connection_test_completed target={} preset={} ok=false error_code={} retryable={} elapsed_ms={}",
+                target,
+                provider.preset_id,
+                error.code,
+                error.retryable,
+                operation_started.elapsed().as_millis(),
+            );
+            return Ok(failed_connection_result(&error));
+        }
     };
     let credential = ProviderCredential::new(api_key);
-    Ok(verify_minutes_provider_connection(
+    let result = verify_minutes_provider_connection(
         adapter.as_ref(),
         &credential,
         provider.request_timeout_ms.min(30_000),
     )
-    .await)
+    .await;
+    log::info!(
+        target: "app.settings",
+        "provider_connection_test_completed target={} preset={} ok={} elapsed_ms={}",
+        target,
+        provider.preset_id,
+        result.ok,
+        operation_started.elapsed().as_millis(),
+    );
+    Ok(result)
 }
 
 /// 通过 Provider 抽象发送无用户数据的最小请求，验证 Key、模型和业务接口响应。

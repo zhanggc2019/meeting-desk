@@ -522,6 +522,8 @@ mod tests {
             updated_at: now,
             processing_started_at: None,
             processing_duration_ms: Some(0),
+            source_duration_ms: Some(60_000),
+            estimated_processing_ms: Some(210_000),
             available_actions: vec![TaskAction::Cancel],
         }
     }

@@ -182,14 +182,19 @@ fn validate_minutes(
     }
 
     normalize_and_validate_structure(&mut minutes)?;
-    validate_protected_context(&minutes, &context)?;
+    validate_protected_context(&mut minutes, &context, mode)?;
     let segments = transcript
         .segments
         .iter()
         .enumerate()
         .map(|(index, segment)| (segment.id.as_str(), (index, segment)))
         .collect::<HashMap<_, _>>();
-    normalize_all_evidence(&mut minutes, &segments, !transcript.segments.is_empty())?;
+    normalize_all_evidence(
+        &mut minutes,
+        &segments,
+        !transcript.segments.is_empty(),
+        mode,
+    )?;
     validate_item_semantics(&mut minutes, transcript, &segments, options, mode)?;
     Ok(minutes)
 }
@@ -304,9 +309,26 @@ fn normalize_risk_or_issue(item: &mut RiskOrIssue) -> Result<(), MinutesError> {
 
 /// 校验 title、time、participants 只来自可信上下文。
 fn validate_protected_context(
-    minutes: &MeetingMinutes,
+    minutes: &mut MeetingMinutes,
     context: &MeetingContext,
+    mode: ValidationMode,
 ) -> Result<(), MinutesError> {
+    if matches!(mode, ValidationMode::ModelCandidate) {
+        if let Some(title) = context.known_title.as_ref() {
+            minutes.title = Some(title.clone());
+            minutes.title_source = TitleSource::Context;
+        } else {
+            minutes.title_source = if minutes.title.is_some() {
+                TitleSource::Generated
+            } else {
+                TitleSource::Unknown
+            };
+        }
+        minutes.meeting_time.start_at = context.known_start_at.clone();
+        minutes.meeting_time.end_at = context.known_end_at.clone();
+        minutes.participants = context.known_participants.clone();
+        return Ok(());
+    }
     match context.known_title.as_deref() {
         Some(title) => {
             if minutes.title.as_deref() != Some(title)
@@ -339,7 +361,34 @@ fn normalize_all_evidence(
     minutes: &mut MeetingMinutes,
     segments: &HashMap<&str, (usize, &TranscriptSegment)>,
     require_evidence: bool,
+    mode: ValidationMode,
 ) -> Result<(), MinutesError> {
+    if matches!(mode, ValidationMode::ModelCandidate) {
+        minutes.topics.retain_mut(|topic| {
+            sanitize_model_evidence(&mut topic.evidence_segment_ids, segments, require_evidence)
+        });
+        minutes.conclusions.retain_mut(|statement| {
+            sanitize_model_evidence(
+                &mut statement.evidence_segment_ids,
+                segments,
+                require_evidence,
+            )
+        });
+        minutes.decisions.retain_mut(|statement| {
+            sanitize_model_evidence(
+                &mut statement.evidence_segment_ids,
+                segments,
+                require_evidence,
+            )
+        });
+        minutes.action_items.retain_mut(|item| {
+            sanitize_model_evidence(&mut item.evidence_segment_ids, segments, require_evidence)
+        });
+        minutes.risks_and_issues.retain_mut(|item| {
+            sanitize_model_evidence(&mut item.evidence_segment_ids, segments, require_evidence)
+        });
+        return Ok(());
+    }
     for topic in &mut minutes.topics {
         normalize_evidence(
             &mut topic.evidence_segment_ids,
@@ -383,6 +432,22 @@ fn normalize_all_evidence(
     Ok(())
 }
 
+/// 清理模型候选中的悬空 evidence，并判断对应可选条目是否仍有足够证据保留。
+fn sanitize_model_evidence(
+    ids: &mut Vec<String>,
+    segments: &HashMap<&str, (usize, &TranscriptSegment)>,
+    require_evidence: bool,
+) -> bool {
+    if segments.is_empty() {
+        ids.clear();
+        return !require_evidence;
+    }
+    ids.retain(|id| segments.contains_key(id.as_str()));
+    ids.sort_by_key(|id| segments.get(id.as_str()).map(|(index, _)| *index));
+    ids.dedup();
+    !require_evidence || !ids.is_empty()
+}
+
 /// 校验 owner、due date、决策确认词和低置信度唯一证据。
 fn validate_item_semantics(
     minutes: &mut MeetingMinutes,
@@ -391,6 +456,10 @@ fn validate_item_semantics(
     options: ValidationOptions,
     mode: ValidationMode,
 ) -> Result<(), MinutesError> {
+    if matches!(mode, ValidationMode::ModelCandidate) {
+        sanitize_model_item_semantics(minutes, transcript, segments, options);
+        return Ok(());
+    }
     for statement in &minutes.conclusions {
         reject_low_confidence_only(
             &statement.evidence_segment_ids,
@@ -439,27 +508,72 @@ fn validate_item_semantics(
             .due_date_text
             .as_deref()
             .and_then(normalize_explicit_due_date);
-        match mode {
-            ValidationMode::ModelCandidate => {
-                if item.due_date.is_some() {
-                    return Err(semantic_violation(
-                        "model_due_date_rejected",
-                        "/actionItems/dueDate",
-                    ));
-                }
-                item.due_date = normalized_due_date;
-            }
-            ValidationMode::VerifiedValue => {
-                if item.due_date != normalized_due_date {
-                    return Err(semantic_violation(
-                        "ambiguous_due_date",
-                        "/actionItems/dueDate",
-                    ));
-                }
-            }
+        if item.due_date != normalized_due_date {
+            return Err(semantic_violation(
+                "ambiguous_due_date",
+                "/actionItems/dueDate",
+            ));
         }
     }
     Ok(())
+}
+
+/// 清洗模型候选中的可选高影响事实，保留其余已经可用的纪要内容。
+fn sanitize_model_item_semantics(
+    minutes: &mut MeetingMinutes,
+    transcript: &Transcript,
+    segments: &HashMap<&str, (usize, &TranscriptSegment)>,
+    options: ValidationOptions,
+) {
+    minutes.conclusions.retain(|statement| {
+        reject_low_confidence_only(
+            &statement.evidence_segment_ids,
+            segments,
+            options.low_confidence_threshold,
+            "/conclusions/evidenceSegmentIds",
+        )
+        .is_ok()
+    });
+    minutes.decisions.retain(|statement| {
+        reject_low_confidence_only(
+            &statement.evidence_segment_ids,
+            segments,
+            options.low_confidence_threshold,
+            "/decisions/evidenceSegmentIds",
+        )
+        .is_ok()
+            && evidence_has_confirmation(&statement.evidence_segment_ids, transcript, segments)
+    });
+    minutes.action_items.retain_mut(|item| {
+        if reject_low_confidence_only(
+            &item.evidence_segment_ids,
+            segments,
+            options.low_confidence_threshold,
+            "/actionItems/evidenceSegmentIds",
+        )
+        .is_err()
+        {
+            return false;
+        }
+        let owner_is_supported = item.owner.as_deref().is_none_or(|owner| {
+            !is_forbidden_owner(owner)
+                && evidence_contains(&item.evidence_segment_ids, owner, transcript, segments)
+        });
+        if !owner_is_supported {
+            item.owner = None;
+        }
+        let due_date_is_supported = item.due_date_text.as_deref().is_none_or(|due_text| {
+            evidence_contains(&item.evidence_segment_ids, due_text, transcript, segments)
+        });
+        if !due_date_is_supported {
+            item.due_date_text = None;
+        }
+        item.due_date = item
+            .due_date_text
+            .as_deref()
+            .and_then(normalize_explicit_due_date);
+        true
+    });
 }
 
 /// 校验并排序一组 evidence ID。

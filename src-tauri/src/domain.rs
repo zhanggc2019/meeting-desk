@@ -71,6 +71,10 @@ pub struct TaskRecord {
     pub processing_started_at: Option<String>,
     #[serde(default)]
     pub processing_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub source_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub estimated_processing_ms: Option<u64>,
     pub available_actions: Vec<TaskAction>,
 }
 

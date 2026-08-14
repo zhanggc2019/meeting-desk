@@ -1,3 +1,4 @@
+pub mod app_logging;
 pub mod app_state;
 pub mod commands;
 pub mod config;
@@ -9,6 +10,7 @@ pub mod secrets;
 pub mod storage;
 
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::Manager;
 
 /// 初始化插件并启动 Tauri 应用。
@@ -18,29 +20,62 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(
-            tauri_plugin_log::Builder::new()
-                .level(log::LevelFilter::Info)
-                .max_file_size(5_000_000) // 5 MB per file
-                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
-                .build(),
-        )
+        .plugin(tauri_plugin_log::Builder::new().skip_logger().build())
         .setup(|app| {
+            let setup_started = Instant::now();
+            let logging_report = app
+                .path()
+                .app_log_dir()
+                .ok()
+                .and_then(|log_dir| app_logging::initialize_application_logger(&log_dir).ok());
+            if let Some(report) = logging_report {
+                log::info!(
+                    target: "app.lifecycle",
+                    "application_start version={} platform=windows retention_days={} expired_logs_removed={}",
+                    app.package_info().version,
+                    app_logging::LOG_RETENTION_DAYS,
+                    report.removed_expired_files,
+                );
+            }
             let data_dir = app.path().app_local_data_dir()?;
             let repository = storage::MeetingRepository::open(&data_dir.join("meetings.sqlite3"))?;
+            log::info!(target: "app.storage", "database_ready backend=sqlite");
             commands::tasks::recover_interrupted_tasks(&repository)?;
+            log::info!(target: "app.tasks", "interrupted_task_recovery_completed");
             let policy =
                 ingest::IngestPolicy::new(2 * 1024 * 1024 * 1024, 32, 8 * 1024 * 1024 * 1024)?;
             let importer = ingest::OfflineAudioImporter::new(data_dir.join("audio"), policy)?;
             // 启动清理采用 best-effort；只持久化待重试状态，不记录受管文件名或路径。
-            let cleanup_pending = importer
-                .clear_staged_files()
-                .map(|report| report.failed > 0)
-                .unwrap_or(true);
-            let _ = repository.set_setting(
+            let cleanup_pending = match importer.clear_staged_files() {
+                Ok(report) => {
+                    log::info!(
+                        target: "app.ingest",
+                        "staging_cleanup_completed removed_count={} failed_count={}",
+                        report.removed,
+                        report.failed,
+                    );
+                    report.failed > 0
+                }
+                Err(_) => {
+                    log::warn!(
+                        target: "app.ingest",
+                        "staging_cleanup_failed error_code=audio_storage_failed retryable=true"
+                    );
+                    true
+                }
+            };
+            if repository
+                .set_setting(
                 "staging_cleanup_pending",
                 if cleanup_pending { "true" } else { "false" },
-            );
+                )
+                .is_err()
+            {
+                log::warn!(
+                    target: "app.storage",
+                    "setting_persist_failed setting=staging_cleanup_pending retryable=true"
+                );
+            }
             app.manage(app_state::AppState {
                 repository: Arc::new(repository),
                 data_dir,
@@ -50,6 +85,11 @@ pub fn run() {
                 cancellations: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
                 task_gate: Arc::new(std::sync::Mutex::new(())),
             });
+            log::info!(
+                target: "app.lifecycle",
+                "application_ready setup_elapsed_ms={}",
+                setup_started.elapsed().as_millis(),
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

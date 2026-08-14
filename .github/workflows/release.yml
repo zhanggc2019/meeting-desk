@@ -76,10 +76,10 @@ jobs:
           tagName: v__VERSION__
           releaseName: 听见纪要 v__VERSION__
           releaseBody: |
-            - 大模型“测试连接”现在会发送不含用户数据的极简提示词，真实验证 API Key、所选模型和纪要接口。
-            - 本地 ASR 设置新增 SenseVoiceSmall 与 FSMN-VAD 的 ModelScope 下载来源、PowerShell 命令、放置目录和一键复制。
-            - 任务队列与会议记录新增分页；成功任务和会议记录均可二次确认删除，并级联清理关联逐字稿、纪要和任务数据。
-            - 修复部分大模型返回 Markdown 代码围栏或简短说明时触发 invalid_minutes_json 的问题，同时继续拒绝多个或无效 JSON 候选。
+            - 转写任务新增预计总耗时、预计完成时间和基于历史任务速度的动态估算，MP3 文件可读取实际录音时长。
+            - 放宽会议纪要语义校验：标题、摘要、时间、参与人等非关键字段允许为空，模型已生成的有效纪要不会在最后一步因日期推断失败。
+            - 新增详细脱敏运行日志，按自然日滚动并保留最近 15 天；记录处理阶段、耗时和稳定错误码，不记录完整转写、Prompt 或模型响应。
+            - 日志会自动遮蔽 API Key、Token、Cookie、Authorization、密码和 Windows 本地路径，并阻止换行日志注入。
             - 模型文件仍由用户单独下载，不包含在安装包和升级包中。
           releaseDraft: false
           prerelease: false

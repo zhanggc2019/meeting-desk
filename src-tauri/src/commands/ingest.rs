@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use serde::Serialize;
 use tauri::{AppHandle, State};
@@ -33,6 +34,7 @@ pub async fn select_audio_files(
     state: State<'_, AppState>,
     selection_mode: ImportSelectionMode,
 ) -> Result<Vec<ImportCandidate>, CommandError> {
+    let operation_started = Instant::now();
     let settings = crate::commands::settings::load_evaluated_settings(state.inner())?;
     ensure_audio_selection_ready(&settings)?;
     let paths = match selection_mode {
@@ -54,14 +56,33 @@ pub async fn select_audio_files(
             .filter_map(|path| path.into_path().ok())
             .collect::<Vec<_>>(),
     };
-    let mut candidates = import_paths(
+    log::info!(
+        target: "app.ingest",
+        "audio_selection_completed selection_mode={:?} selected_count={}",
+        selection_mode,
+        paths.len(),
+    );
+    let mut candidates = match import_paths(
         state.importer.clone(),
         state.artifacts.clone(),
         state.import_gate.clone(),
         paths,
         selection_mode,
     )
-    .await?;
+    .await
+    {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            log::error!(
+                target: "app.ingest",
+                "audio_import_failed error_code={} retryable={} elapsed_ms={}",
+                error.code,
+                error.retryable,
+                operation_started.elapsed().as_millis(),
+            );
+            return Err(error);
+        }
+    };
     let active_artifacts = state
         .repository
         .list_tasks()?
@@ -70,6 +91,23 @@ pub async fn select_audio_files(
         .map(|task| task.artifact_id)
         .collect::<HashSet<_>>();
     mark_active_artifacts_unavailable(&mut candidates, &active_artifacts);
+    let ready_count = candidates
+        .iter()
+        .filter(|candidate| candidate.validation_status == "ready")
+        .count();
+    let total_bytes = candidates
+        .iter()
+        .filter_map(|candidate| candidate.size_bytes)
+        .fold(0u64, u64::saturating_add);
+    log::info!(
+        target: "app.ingest",
+        "audio_import_completed candidate_count={} ready_count={} rejected_count={} total_bytes={} elapsed_ms={}",
+        candidates.len(),
+        ready_count,
+        candidates.len().saturating_sub(ready_count),
+        total_bytes,
+        operation_started.elapsed().as_millis(),
+    );
     Ok(candidates)
 }
 
@@ -78,6 +116,12 @@ fn ensure_audio_selection_ready(settings: &PublicSettings) -> Result<(), Command
     if settings.transcription.ready && settings.minutes.ready {
         Ok(())
     } else {
+        log::warn!(
+            target: "app.ingest",
+            "audio_selection_blocked error_code=provider_configuration_required transcription_ready={} minutes_ready={}",
+            settings.transcription.ready,
+            settings.minutes.ready,
+        );
         Err(CommandError::new(
             "provider_configuration_required",
             "请先完成语音转写和会议纪要服务配置，再选择音频",
@@ -102,6 +146,11 @@ pub fn release_audio_artifact(
         .into_iter()
         .any(|task| task.artifact_id == artifact_id && task.retains_audio_artifact());
     if is_active {
+        log::warn!(
+            target: "app.ingest",
+            "artifact_release_blocked artifact_id={} reason=active_task",
+            artifact_id,
+        );
         return Ok(false);
     }
     let removed = state
@@ -115,6 +164,12 @@ pub fn release_audio_artifact(
             CommandError::new("artifact_registry_unavailable", "音频导入状态不可用", true)
         })?
         .remove(&artifact_id);
+    log::info!(
+        target: "app.ingest",
+        "artifact_release_completed artifact_id={} removed={}",
+        artifact_id,
+        removed,
+    );
     Ok(removed)
 }
 

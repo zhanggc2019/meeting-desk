@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::path::Path;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -92,6 +93,8 @@ pub fn list_meetings_page(
     state: State<'_, AppState>,
     query: MeetingPageQuery,
 ) -> Result<MeetingPageResponse, CommandError> {
+    let operation_started = Instant::now();
+    let has_query = !query.query.trim().is_empty();
     let offset = pagination_offset(query.page, query.page_size)?;
     let (mut items, total) =
         state
@@ -117,12 +120,18 @@ pub fn list_meetings_page(
             .and_then(task_processing_duration_ms);
         summaries.push(meeting_summary_from_detail(detail, processing_duration_ms));
     }
-    Ok(meeting_page_response(
-        summaries,
-        total,
-        actual_page,
-        query.page_size,
-    ))
+    let response = meeting_page_response(summaries, total, actual_page, query.page_size);
+    log::info!(
+        target: "app.meetings",
+        "meeting_page_loaded has_query={} page={} page_size={} result_count={} total={} elapsed_ms={}",
+        has_query,
+        response.page,
+        response.page_size,
+        response.items.len(),
+        response.total,
+        operation_started.elapsed().as_millis(),
+    );
+    Ok(response)
 }
 
 /// 从本地仓库构建会议摘要，并在数据库查询后执行正文搜索过滤。
@@ -244,6 +253,7 @@ pub fn get_meeting_detail(
     state: State<'_, AppState>,
     meeting_id: String,
 ) -> Result<MeetingDetailResponse, CommandError> {
+    let operation_started = Instant::now();
     let detail = state
         .repository
         .get_meeting(&meeting_id)?
@@ -251,7 +261,7 @@ pub fn get_meeting_detail(
     let tasks = state.repository.list_tasks()?;
     let processing_duration_ms = processing_duration_for_meeting(&tasks, &detail.id);
     let transcript = normalize_transcript(&detail.transcript, detail.transcript_segments);
-    Ok(MeetingDetailResponse {
+    let response = MeetingDetailResponse {
         id: detail.id,
         template_name: template_name(&detail.template_id).to_string(),
         duration_ms: transcript["durationMs"].as_u64(),
@@ -259,7 +269,15 @@ pub fn get_meeting_detail(
         created_at: detail.created_at,
         minutes: detail.minutes,
         transcript,
-    })
+    };
+    log::info!(
+        target: "app.meetings",
+        "meeting_detail_loaded meeting_id={} duration_ms={:?} elapsed_ms={}",
+        response.id,
+        response.duration_ms,
+        operation_started.elapsed().as_millis(),
+    );
+    Ok(response)
 }
 
 /// 从恢复任务所需的现有生命周期快照即时计算指定会议的总处理耗时。
@@ -298,7 +316,14 @@ pub fn get_meeting_markdown_preview(
         .ok_or_else(|| CommandError::new("meeting_not_found", "未找到该会议记录", false))?;
     let minutes: MeetingMinutes = serde_json::from_value(detail.minutes)
         .map_err(|_| CommandError::new("minutes_invalid", "会议纪要格式无效", false))?;
-    Ok(render_export_markdown(&minutes, &detail.transcript))
+    let markdown = render_export_markdown(&minutes, &detail.transcript);
+    log::info!(
+        target: "app.meetings",
+        "meeting_preview_rendered meeting_id={} output_bytes={}",
+        meeting_id,
+        markdown.len(),
+    );
+    Ok(markdown)
 }
 
 /// 删除本地会议记录；永远不会删除用户选择的原始音频。
@@ -315,9 +340,17 @@ pub fn delete_meeting(
     let outcome = state
         .repository
         .delete_meeting_with_related_tasks(&meeting_id)?;
+    let artifact_count = outcome.artifact_ids.len();
     for artifact_id in outcome.artifact_ids {
         crate::commands::tasks::cleanup_unused_artifact(&state, &artifact_id);
     }
+    log::info!(
+        target: "app.meetings",
+        "meeting_delete_completed meeting_id={} deleted={} artifact_cleanup_count={}",
+        meeting_id,
+        outcome.deleted,
+        artifact_count,
+    );
     Ok(outcome.deleted)
 }
 
@@ -342,6 +375,7 @@ pub async fn export_meeting_markdown(
     state: State<'_, AppState>,
     meeting_id: String,
 ) -> Result<ExportResult, CommandError> {
+    let operation_started = Instant::now();
     let detail = state
         .repository
         .get_meeting(&meeting_id)?
@@ -356,6 +390,12 @@ pub async fn export_meeting_markdown(
         .set_file_name(&display_name)
         .blocking_save_file();
     let Some(path) = selected.and_then(|value| value.into_path().ok()) else {
+        log::info!(
+            target: "app.meetings",
+            "meeting_export_cancelled meeting_id={} elapsed_ms={}",
+            meeting_id,
+            operation_started.elapsed().as_millis(),
+        );
         return Ok(ExportResult {
             status: "cancelled",
             display_name: None,
@@ -363,10 +403,18 @@ pub async fn export_meeting_markdown(
     };
     ensure_markdown_extension(&path)?;
     let markdown = render_export_markdown(&minutes, &detail.transcript);
+    let output_bytes = markdown.len();
     tauri::async_runtime::spawn_blocking(move || write_markdown_atomically(&path, &markdown))
         .await
         .map_err(|_| CommandError::new("export_failed", "Markdown 导出未完成", true))?
         .map_err(|_| CommandError::new("export_failed", "无法写入所选文件", true))?;
+    log::info!(
+        target: "app.meetings",
+        "meeting_export_completed meeting_id={} output_bytes={} elapsed_ms={}",
+        meeting_id,
+        output_bytes,
+        operation_started.elapsed().as_millis(),
+    );
     Ok(ExportResult {
         status: "exported",
         display_name: Some(display_name),
@@ -530,6 +578,8 @@ mod tests {
             updated_at: "2026-07-21T01:02:03Z".to_string(),
             processing_started_at: None,
             processing_duration_ms: Some(42_000),
+            source_duration_ms: Some(60_000),
+            estimated_processing_ms: Some(42_000),
             available_actions: vec![TaskAction::OpenMeeting],
         };
 

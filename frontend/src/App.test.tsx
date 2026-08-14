@@ -205,6 +205,32 @@ describe("Windows 离线媒体工作台", () => {
     expect(listTasks).toHaveBeenCalledTimes(initialLoadCount + 1);
   });
 
+  it("在任务列表和详情中显示预计剩余时间与预计完成时间", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    render(<App client={client} />);
+
+    await user.click(screen.getByRole("button", { name: "任务队列" }));
+
+    expect(await screen.findByRole("columnheader", { name: "预计剩余" })).toBeInTheDocument();
+    expect(screen.getAllByText(/还需约/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/预计总耗时约/)).toBeInTheDocument();
+    expect(screen.getByText(/预计 .* 完成/)).toBeInTheDocument();
+    expect(screen.getByText(/根据录音时长和本机历史处理速度动态估算/)).toBeInTheDocument();
+  });
+
+  it("已完成任务显示真实处理耗时且不显示预计完成时间", async () => {
+    const user = userEvent.setup();
+    render(<App client={createMockDesktopClient()} />);
+
+    await user.click(screen.getByRole("button", { name: "任务队列" }));
+    await user.click(await screen.findByRole("button", { name: "产品讨论.m4a" }));
+
+    const inspector = screen.getByLabelText("产品讨论.m4a 任务详情");
+    expect(within(inspector).getByText(/实际处理耗时/)).toBeInTheDocument();
+    expect(within(inspector).queryByText(/预计 .* 完成/)).not.toBeInTheDocument();
+  });
+
   it("确认后删除失败任务并从队列移除", async () => {
     const user = userEvent.setup();
     render(<App client={createMockDesktopClient()} />);

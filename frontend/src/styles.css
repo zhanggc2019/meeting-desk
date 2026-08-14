@@ -489,6 +489,8 @@ tbody tr:hover { background: #f8fafb; }
 .task-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 .task-layout.has-inspector { grid-template-columns: minmax(0, 1fr) 280px; }
 .task-list-panel { min-width: 0; }
+.task-list-panel .table-wrap { overflow-x: auto; }
+.task-table { min-width: 820px; }
 .task-table tr { cursor: pointer; }
 .task-table .selected-row { background: #edf3f7; }
 .table-row-link, .meeting-title-link { width: 100%; padding: 0; color: inherit; background: transparent; border: 0; text-align: left; cursor: pointer; }
@@ -498,10 +500,17 @@ tbody tr:hover { background: #f8fafb; }
 .status-label.failed .status-dot, .status-label.cancelled .status-dot { background: var(--danger); }
 .status-label.queued .status-dot { background: #7a8791; }
 progress { display: block; width: 95px; height: 3px; margin-top: 5px; accent-color: var(--accent); }
+.estimated-time-cell { min-width: 105px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 
 .task-inspector { padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; align-self: start; }
 .inspector-heading h2 { margin: 4px 0; font-size: 16px; overflow-wrap: anywhere; }
 .inspector-heading p { margin: 0; color: var(--muted); font-size: 12px; }
+.task-timing-summary { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 9px; margin: 16px 0 4px; padding: 12px; color: #315a6c; background: #edf5f7; border: 1px solid #d9e8ec; border-radius: 7px; }
+.task-timing-summary strong, .task-timing-summary small { display: block; }
+.task-timing-summary strong { font-size: 13px; }
+.task-timing-summary small { margin-top: 4px; color: #647783; font-size: 11px; line-height: 1.4; }
+.task-timing-summary.completed { color: #39654d; background: #eef7f1; border-color: #d9eade; }
+.task-timing-summary.overdue { color: #7a5624; background: #fff7e9; border-color: #f1e1c1; }
 .task-error { display: grid; grid-template-columns: 20px 1fr; gap: 9px; margin: 18px 0; padding: 11px; color: #7d4141; background: var(--danger-soft); border-radius: 7px; }
 .task-error strong, .task-error small { display: block; }
 .task-error small { margin-top: 3px; opacity: .7; }

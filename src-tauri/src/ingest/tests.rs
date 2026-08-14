@@ -213,7 +213,7 @@ fn imports_valid_wav_without_modifying_source() {
     assert_eq!(managed, source_bytes);
 }
 
-/// 验证最小 MP3 夹具可以通过连续 frame 校验。
+/// 验证最小 MP3 夹具可以通过连续 frame 校验并计算时长。
 #[test]
 fn imports_valid_mp3_fixture() {
     let source_root = TempDir::new().expect("source tempdir must be created");
@@ -229,7 +229,7 @@ fn imports_valid_mp3_fixture() {
         .as_ref()
         .expect("ready result must include artifact");
     assert_eq!(artifact.staging_metadata.mime_type, "audio/mpeg");
-    assert_eq!(artifact.staging_metadata.duration_ms, None);
+    assert_eq!(artifact.staging_metadata.duration_ms, Some(52));
 }
 
 /// 验证最小 M4A 夹具可以识别 mp4a 音频轨和时长。
@@ -474,6 +474,12 @@ fn imports_repository_real_mp3_when_present() {
             .mime_type,
         "audio/mpeg"
     );
+    let duration_ms = response.items[0]
+        .artifact
+        .as_ref()
+        .and_then(|artifact| artifact.staging_metadata.duration_ms)
+        .expect("real MP3 must expose duration");
+    assert!(duration_ms > 60_000, "real MP3 duration must be plausible");
 }
 
 /// 验证由外部测试环境提供的真实 MP4/MOV 能通过媒体导入，不把样例提交到仓库。

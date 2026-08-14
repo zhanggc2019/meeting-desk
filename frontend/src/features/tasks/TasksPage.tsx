@@ -1,4 +1,4 @@
-import { ArrowRight, FileAudio, RefreshCw, RotateCcw, SlidersHorizontal, Trash2, XCircle } from "lucide-react";
+import { ArrowRight, Clock3, FileAudio, RefreshCw, RotateCcw, SlidersHorizontal, Trash2, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { Pagination } from "../../components/ui/Pagination";
@@ -6,7 +6,8 @@ import type { ProcessingTask, TaskQuery } from "../../contracts/desktop";
 import { useDesktopClient } from "../../services/DesktopClientContext";
 import { getSafeErrorMessage } from "../../services/desktopClient";
 import { useAppStore } from "../../stores/appStore";
-import { formatRelativeDate, getTaskStatusLabel } from "../../utils/format";
+import { formatDuration, formatRelativeDate, getTaskStatusLabel } from "../../utils/format";
+import { formatApproximateDuration, formatEstimatedCompletion, getTaskTiming } from "./taskTiming";
 
 const filters: Array<{ id: TaskQuery["filter"]; label: string }> = [
   { id: "all", label: "全部" },
@@ -53,6 +54,7 @@ export function TasksPage() {
     () => tasks.some((task) => !["completed", "failed", "cancelled", "interrupted"].includes(task.status)),
     [tasks],
   );
+  const nowMs = Date.now();
 
   /** 从持久化任务源刷新当前筛选结果。 */
   const loadTasks = useCallback(async () => {
@@ -197,7 +199,7 @@ export function TasksPage() {
           {tasks.length > 0 ? (
             <div className="table-wrap">
               <table className="task-table">
-                <thead><tr><th>文件名</th><th>当前阶段</th><th>尝试</th><th>更新时间</th><th><span className="visually-hidden">操作</span></th></tr></thead>
+                <thead><tr><th>文件名</th><th>当前阶段</th><th>预计剩余</th><th>尝试</th><th>更新时间</th><th><span className="visually-hidden">操作</span></th></tr></thead>
                 <tbody>
                   {tasks.map((task) => (
                     <tr key={task.id} className={selectedTask?.id === task.id ? "selected-row" : undefined} onClick={() => setSelectedTaskId(task.id)}>
@@ -206,6 +208,7 @@ export function TasksPage() {
                         <span className={`status-label ${task.status}`}><span className="status-dot" aria-hidden="true" />{getTaskStatusLabel(task.status)}</span>
                         {task.progress !== null ? <progress value={task.progress} max={1} aria-label={`${task.displayName} 处理进度`} /> : null}
                       </td>
+                      <td className="estimated-time-cell"><TaskTimingCell task={task} nowMs={nowMs} /></td>
                       <td>{task.attempt} / {task.maxAttempts}</td>
                       <td><time dateTime={task.updatedAt}>{formatRelativeDate(task.updatedAt)}</time></td>
                       <td className="cell-actions">
@@ -224,7 +227,7 @@ export function TasksPage() {
           {total > 0 ? <Pagination page={page} totalPages={totalPages} total={total} disabled={loading} onPageChange={changePage} /> : null}
         </section>
 
-        {selectedTask ? <TaskInspector task={selectedTask} onOpenMeeting={openMeeting} onOpenSettings={() => useAppStore.getState().openSettings()} /> : null}
+        {selectedTask ? <TaskInspector task={selectedTask} nowMs={nowMs} onOpenMeeting={openMeeting} onOpenSettings={() => useAppStore.getState().openSettings()} /> : null}
       </div>
 
       <ConfirmDialog
@@ -253,12 +256,13 @@ export function TasksPage() {
 
 interface TaskInspectorProps {
   task: ProcessingTask;
+  nowMs: number;
   onOpenMeeting: (meetingId: string) => void;
   onOpenSettings: () => void;
 }
 
 /** 在右侧检查器中展示任务的真实阶段与安全错误。 */
-function TaskInspector({ task, onOpenMeeting, onOpenSettings }: TaskInspectorProps) {
+function TaskInspector({ task, nowMs, onOpenMeeting, onOpenSettings }: TaskInspectorProps) {
   const currentIndex = timelineStages.indexOf(task.status as (typeof timelineStages)[number]);
   return (
     <aside className="task-inspector" aria-label={`${task.displayName} 任务详情`}>
@@ -267,6 +271,8 @@ function TaskInspector({ task, onOpenMeeting, onOpenSettings }: TaskInspectorPro
         <h2>{task.displayName}</h2>
         <p>{getTaskStatusLabel(task.status)}</p>
       </div>
+
+      <TaskTimingSummary task={task} nowMs={nowMs} />
 
       {task.error ? (
         <div className="task-error" role="status">
@@ -295,5 +301,60 @@ function TaskInspector({ task, onOpenMeeting, onOpenSettings }: TaskInspectorPro
         </button>
       ) : null}
     </aside>
+  );
+}
+
+interface TaskTimingProps {
+  task: ProcessingTask;
+  nowMs: number;
+}
+
+/** 在任务表格中显示紧凑的预计剩余时间或真实处理耗时。 */
+function TaskTimingCell({ task, nowMs }: TaskTimingProps) {
+  const timing = getTaskTiming(task, nowMs);
+  if (timing.kind === "remaining") return <>还需{formatApproximateDuration(timing.remainingMs!)}</>;
+  if (timing.kind === "overdue") return <>已超出预计</>;
+  if (timing.kind === "estimating") return <>正在估算</>;
+  if (timing.kind === "completed") return <>实际 {formatDuration(timing.actualProcessingMs)}</>;
+  return <>—</>;
+}
+
+/** 在任务详情中解释预计总耗时、剩余时间和估算依据。 */
+function TaskTimingSummary({ task, nowMs }: TaskTimingProps) {
+  const timing = getTaskTiming(task, nowMs);
+  if (timing.kind === "unavailable") return null;
+  if (timing.kind === "completed") {
+    return (
+      <div className="task-timing-summary completed">
+        <Clock3 size={18} aria-hidden="true" />
+        <div><strong>实际处理耗时 {formatDuration(timing.actualProcessingMs)}</strong><small>任务已完成</small></div>
+      </div>
+    );
+  }
+  if (timing.kind === "estimating") {
+    return (
+      <div className="task-timing-summary">
+        <Clock3 size={18} aria-hidden="true" />
+        <div><strong>正在估算</strong><small>读取不到录音时长时，将在获得更多信息后更新</small></div>
+      </div>
+    );
+  }
+  if (timing.kind === "overdue") {
+    return (
+      <div className="task-timing-summary overdue">
+        <Clock3 size={18} aria-hidden="true" />
+        <div><strong>已超出初始预计</strong><small>任务仍在处理中，实际耗时会受音频内容和本机负载影响</small></div>
+      </div>
+    );
+  }
+  return (
+    <div className="task-timing-summary">
+      <Clock3 size={18} aria-hidden="true" />
+      <div>
+        <strong>预计还需{formatApproximateDuration(timing.remainingMs!)}</strong>
+        <small>预计总耗时{formatApproximateDuration(timing.totalEstimatedMs!)} · 预计 {formatEstimatedCompletion(timing.estimatedCompletionAt!)} 完成</small>
+        <small>根据录音时长和本机历史处理速度动态估算</small>
+      </div>
+    </div>
   );
 }

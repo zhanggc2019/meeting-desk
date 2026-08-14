@@ -1,6 +1,6 @@
 [package]
 name = "meeting-desk"
-version = "0.3.6"
+version = "0.3.7"
 description = "Windows offline media transcription and meeting minutes desktop tool"
 authors = ["Internal Tools Team"]
 edition = "2021"
@@ -19,6 +19,7 @@ chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
 keyring = { version = "3", features = ["windows-native"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
+regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

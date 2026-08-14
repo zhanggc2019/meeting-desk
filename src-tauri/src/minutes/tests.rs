@@ -318,20 +318,20 @@ fn rejects_invalid_structural_fixtures() {
     }
 }
 
-/// 验证 speaker label 不能成为无可信上下文的参会人。
+/// 验证模型推断的 speaker 参会人会降级为空，不阻断整份纪要。
 #[test]
-fn rejects_participant_inferred_from_speaker_label() {
+fn clears_participant_inferred_from_speaker_label() {
     let fixture = fixture_request(NO_CONTEXT_REQUEST);
-    let error = parse_and_validate_model_output(
+    let minutes = parse_and_validate_model_output(
         INFERRED_PARTICIPANT,
         MEETING_MINUTES_SCHEMA_VERSION,
         &fixture.transcript,
         &fixture.context,
         fixture.validation_options(),
     )
-    .expect_err("inferred participant");
-    assert_eq!(error.code(), "inferred_identity_rejected");
-    assert_eq!(error.path(), "/participants");
+    .expect("sanitize inferred participant");
+    assert!(minutes.participants.is_empty());
+    assert_eq!(minutes.summary.as_deref(), Some("匿名讨论。"));
 }
 
 /// 验证 segment 时间戳不能在无可信上下文时被提升为会议时间。
@@ -352,19 +352,20 @@ fn rejects_meeting_time_inferred_from_transcript_timestamps() {
     assert_eq!(error.path(), "/meetingTime");
 }
 
-/// 验证 evidence 只能引用当前 transcript 的真实 segment ID。
+/// 验证悬空 evidence 对应的可选条目会被移除，不阻断其他纪要内容。
 #[test]
-fn rejects_dangling_evidence_fixture() {
+fn drops_item_with_dangling_evidence_fixture() {
     let fixture = fixture_request(STANDARD_REQUEST);
-    let error = parse_and_validate_model_output(
+    let minutes = parse_and_validate_model_output(
         DANGLING_EVIDENCE,
         MEETING_MINUTES_SCHEMA_VERSION,
         &fixture.transcript,
         &fixture.context,
         fixture.validation_options(),
     )
-    .expect_err("dangling evidence");
-    assert_eq!(error.code(), "invalid_evidence_reference");
+    .expect("drop dangling evidence item");
+    assert!(minutes.topics.is_empty());
+    assert_eq!(minutes.summary.as_deref(), Some("会议确认方案。"));
 }
 
 /// 验证高影响事实不能只由低置信度 segment 支持。
@@ -387,42 +388,63 @@ fn rejects_decision_supported_only_by_low_confidence_segment() {
     assert_eq!(error.code(), "low_confidence_only_evidence");
 }
 
-/// 验证匿名 speaker、代词和模型私填 dueDate 都不能成为可信待办事实。
+/// 验证不可信负责人和截止日期会被清空，模型私填 dueDate 会由可信代码重算。
 #[test]
-fn rejects_inferred_owner_and_model_due_date() {
+fn sanitizes_inferred_owner_and_model_due_date() {
     let fixture = fixture_request(STANDARD_REQUEST);
     let mut minutes = fixture_minutes(STANDARD_MINUTES);
     minutes.action_items[0].owner = Some("speaker_2".into());
-    minutes.action_items[0].due_date = None;
-    let error = validate_model_minutes(
+    minutes.action_items[0].due_date_text = Some("下周前".into());
+    minutes.action_items[0].due_date = Some("2026-07-20".into());
+    let sanitized = validate_model_minutes(
         minutes,
         MEETING_MINUTES_SCHEMA_VERSION,
         &fixture.transcript,
         &fixture.context,
         fixture.validation_options(),
     )
-    .expect_err("inferred owner");
-    assert_eq!(error.code(), "inferred_owner_rejected");
+    .expect("sanitize optional action item facts");
+    assert_eq!(sanitized.action_items[0].owner, None);
+    assert_eq!(sanitized.action_items[0].due_date_text, None);
+    assert_eq!(sanitized.action_items[0].due_date, None);
+    assert_eq!(
+        sanitized.summary.as_deref(),
+        Some("会议确认采用分阶段上线方案，先在测试环境完成验证。")
+    );
 
-    let mut minutes = fixture_minutes(STANDARD_MINUTES);
-    let error = validate_model_minutes(
-        minutes.clone(),
-        MEETING_MINUTES_SCHEMA_VERSION,
-        &fixture.transcript,
-        &fixture.context,
-        fixture.validation_options(),
-    )
-    .expect_err("model due date");
-    assert_eq!(error.code(), "model_due_date_rejected");
-    minutes.action_items[0].due_date = None;
-    assert!(validate_model_minutes(
+    let minutes = fixture_minutes(STANDARD_MINUTES);
+    let sanitized = validate_model_minutes(
         minutes,
         MEETING_MINUTES_SCHEMA_VERSION,
         &fixture.transcript,
         &fixture.context,
         fixture.validation_options(),
     )
-    .is_ok());
+    .expect("recompute explicit due date");
+    assert_eq!(
+        sanitized.action_items[0].due_date.as_deref(),
+        Some("2026-07-20")
+    );
+}
+
+/// 验证模型候选中的未明确决策会被移除，而不是导致整份纪要失败。
+#[test]
+fn drops_unconfirmed_model_decision() {
+    let fixture = fixture_request(STANDARD_REQUEST);
+    let mut minutes = fixture_minutes(STANDARD_MINUTES);
+    minutes.decisions[0].evidence_segment_ids = vec!["s3".into()];
+
+    let sanitized = validate_model_minutes(
+        minutes,
+        MEETING_MINUTES_SCHEMA_VERSION,
+        &fixture.transcript,
+        &fixture.context,
+        fixture.validation_options(),
+    )
+    .expect("drop unconfirmed decision");
+
+    assert!(sanitized.decisions.is_empty());
+    assert_eq!(sanitized.conclusions.len(), 1);
 }
 
 /// 验证相对日期不补齐，只有完整公历日期会被确定性规范化。

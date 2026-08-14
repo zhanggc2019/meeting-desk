@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -81,6 +81,13 @@ struct IsoAudioTrack {
     supported_codec: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Mp3FrameInfo {
+    byte_length: usize,
+    sample_rate: u32,
+    samples_per_frame: u32,
+}
+
 /// ISO BMFF 中和转写相关的媒体轨类型。
 enum IsoMediaTrack {
     Audio(IsoAudioTrack),
@@ -123,10 +130,7 @@ pub fn inspect_audio(path: &Path, expected: AudioFormat) -> Result<AudioInspecti
 
     let duration_ms = match actual {
         DetectedContainer::Wav => validate_wav(&mut file, byte_length)?,
-        DetectedContainer::Mp3 => {
-            validate_mp3(&mut file, byte_length)?;
-            None
-        }
+        DetectedContainer::Mp3 => Some(inspect_mp3_duration(&mut file, byte_length)?),
         DetectedContainer::IsoBmff => validate_iso_bmff(&mut file, byte_length)?,
     };
 
@@ -239,9 +243,47 @@ fn validate_wav(file: &mut File, byte_length: u64) -> Result<Option<u64>, Ingest
         .map_err(|_| IngestError::CorruptAudio)
 }
 
-/// 校验 MP3 至少包含两个连续、完整且参数合法的 Layer III frame。
-fn validate_mp3(file: &mut File, byte_length: u64) -> Result<(), IngestError> {
-    find_mp3_frame(file, byte_length).map(|_| ())
+/// 校验 MP3 连续帧并根据每帧采样数计算总播放时长。
+fn inspect_mp3_duration(file: &mut File, byte_length: u64) -> Result<u64, IngestError> {
+    let first_offset = find_mp3_frame(file, byte_length)?;
+    file.seek(SeekFrom::Start(first_offset))
+        .map_err(|_| IngestError::CorruptAudio)?;
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let mut consumed_bytes = 0u64;
+    let mut frame_count = 0u64;
+    let mut duration_ns = 0u128;
+    loop {
+        let mut header = [0u8; 4];
+        if reader.read_exact(&mut header).is_err() {
+            break;
+        }
+        let Some(frame) = parse_mp3_frame(&header) else {
+            break;
+        };
+        let frame_length = frame.byte_length as u64;
+        let frame_end = first_offset
+            .checked_add(consumed_bytes)
+            .and_then(|offset| offset.checked_add(frame_length))
+            .ok_or(IngestError::CorruptAudio)?;
+        if frame_end > byte_length {
+            break;
+        }
+        duration_ns = duration_ns.saturating_add(
+            u128::from(frame.samples_per_frame).saturating_mul(1_000_000_000)
+                / u128::from(frame.sample_rate),
+        );
+        frame_count = frame_count.saturating_add(1);
+        consumed_bytes = consumed_bytes.saturating_add(frame_length);
+        let remaining_frame_bytes = i64::try_from(frame.byte_length.saturating_sub(4))
+            .map_err(|_| IngestError::CorruptAudio)?;
+        reader
+            .seek(SeekFrom::Current(remaining_frame_bytes))
+            .map_err(|_| IngestError::CorruptAudio)?;
+    }
+    if frame_count < 2 {
+        return Err(IngestError::CorruptAudio);
+    }
+    u64::try_from(duration_ns / 1_000_000).map_err(|_| IngestError::CorruptAudio)
 }
 
 /// 跳过可选 ID3v2 tag 后查找两个连续有效的 MP3 frame。
@@ -279,14 +321,14 @@ fn find_mp3_frame(file: &mut File, byte_length: u64) -> Result<u64, IngestError>
     read_exact_at(file, scan_start, &mut buffer)?;
 
     for index in 0..=buffer.len() - 4 {
-        let Some(frame_length) = parse_mp3_frame_length(&buffer[index..index + 4]) else {
+        let Some(frame) = parse_mp3_frame(&buffer[index..index + 4]) else {
             continue;
         };
         let first_offset = scan_start
             .checked_add(index as u64)
             .ok_or(IngestError::CorruptAudio)?;
         let next_offset = first_offset
-            .checked_add(frame_length as u64)
+            .checked_add(frame.byte_length as u64)
             .ok_or(IngestError::CorruptAudio)?;
         if next_offset
             .checked_add(4)
@@ -297,11 +339,11 @@ fn find_mp3_frame(file: &mut File, byte_length: u64) -> Result<u64, IngestError>
         }
         let mut next_header = [0u8; 4];
         read_exact_at(file, next_offset, &mut next_header)?;
-        let Some(next_length) = parse_mp3_frame_length(&next_header) else {
+        let Some(next_frame) = parse_mp3_frame(&next_header) else {
             continue;
         };
         if next_offset
-            .checked_add(next_length as u64)
+            .checked_add(next_frame.byte_length as u64)
             .ok_or(IngestError::CorruptAudio)?
             <= byte_length
         {
@@ -312,8 +354,8 @@ fn find_mp3_frame(file: &mut File, byte_length: u64) -> Result<u64, IngestError>
     Err(IngestError::CorruptAudio)
 }
 
-/// 解析 MPEG Layer III header 并计算单个 frame 的字节长度。
-fn parse_mp3_frame_length(header: &[u8]) -> Option<usize> {
+/// 解析 MPEG Layer III header，并返回帧长度和播放时长所需的采样参数。
+fn parse_mp3_frame(header: &[u8]) -> Option<Mp3FrameInfo> {
     if header.len() < 4 || header[0] != 0xff || header[1] & 0xe0 != 0xe0 {
         return None;
     }
@@ -354,7 +396,12 @@ fn parse_mp3_frame_length(header: &[u8]) -> Option<usize> {
     let coefficient = if mpeg1 { 144 } else { 72 };
     let padding = u32::from((header[2] >> 1) & 0x01);
     let length = (coefficient * bitrate_kbps * 1_000) / sample_rate + padding;
-    usize::try_from(length).ok().filter(|value| *value >= 24)
+    let byte_length = usize::try_from(length).ok().filter(|value| *value >= 24)?;
+    Some(Mp3FrameInfo {
+        byte_length,
+        sample_rate,
+        samples_per_frame: if mpeg1 { 1_152 } else { 576 },
+    })
 }
 
 /// 校验 ISO BMFF 顶层 box、媒体数据及受支持音频轨。

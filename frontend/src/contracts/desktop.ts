@@ -69,6 +69,10 @@ export interface ProcessingTask {
   createdAt: string;
   processingStartedAt: string | null;
   processingDurationMs: number | null;
+  /** 源媒体时长；可选以兼容升级前保存的任务。 */
+  sourceDurationMs?: number | null;
+  /** 创建任务时固定的预计总处理耗时；可选以兼容升级前保存的任务。 */
+  estimatedProcessingMs?: number | null;
   error: TaskError | null;
   availableActions: TaskAction[];
 }
