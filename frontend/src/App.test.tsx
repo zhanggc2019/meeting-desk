@@ -62,6 +62,45 @@ describe("Windows 离线媒体工作台", () => {
     expect(logo).toHaveAttribute("src", "/favicon.svg");
   });
 
+  it("在左上角提供帮助与关于信息，并允许手动检查更新", async () => {
+    const user = userEvent.setup();
+    const updateService = {
+      checkForUpdate: vi.fn().mockResolvedValue(null),
+      relaunch: vi.fn().mockResolvedValue(undefined),
+    };
+    render(<App client={createMockDesktopClient()} updateService={updateService} />);
+
+    expect(screen.getByRole("button", { name: "帮助" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "帮助" }));
+    expect(screen.getByRole("heading", { name: "使用帮助" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭帮助" }));
+
+    await user.click(screen.getByRole("button", { name: "关于" }));
+    expect(screen.getByRole("heading", { name: "听见纪要" })).toBeInTheDocument();
+    expect(screen.getByText(/^版本 \d+\.\d+\.\d+$/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "检查更新" }));
+    expect(await screen.findByText("已是最新版本")).toBeInTheDocument();
+    expect(updateService.checkForUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("将本地 ASR 与大模型配置拆分到独立设置分类", async () => {
+    const user = userEvent.setup();
+    render(<App client={createMockDesktopClient()} />);
+    await user.click(screen.getByRole("button", { name: "设置" }));
+
+    expect(await screen.findByRole("heading", { name: "设置" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "本地 ASR" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("region", { name: "本地 ASR 模型" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "纪要生成大模型" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存 ASR 设置" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "大模型" }));
+    expect(screen.getByRole("button", { name: "大模型" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("region", { name: "本地 ASR 模型" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "纪要生成大模型" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存大模型设置" })).toBeInTheDocument();
+  });
+
   it("校验单个文件并创建独立处理任务", async () => {
     const user = userEvent.setup();
     render(<App client={await createConfiguredClient()} />);
@@ -224,12 +263,13 @@ describe("Windows 离线媒体工作台", () => {
     render(<App client={createMockDesktopClient()} />);
     await user.click(screen.getByRole("button", { name: "设置" }));
 
-    expect(await screen.findByRole("heading", { name: "服务设置" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "设置" })).toBeInTheDocument();
     expect(within(screen.getByLabelText("语音转写服务商")).getByRole("option", { name: "本地 SenseVoiceSmall" })).toBeInTheDocument();
     expect(screen.queryByLabelText("语音转写服务地址")).not.toBeInTheDocument();
     expect(screen.getByLabelText("语音转写模型")).toHaveValue("SenseVoiceSmall");
     expect(screen.getByText("模型保留在本机")).toBeInTheDocument();
 
+    await user.click(screen.getByRole("button", { name: "大模型" }));
     await user.selectOptions(screen.getByLabelText("会议纪要服务商"), "deepseek");
     expect(screen.queryByLabelText("会议纪要服务地址")).not.toBeInTheDocument();
     expect(screen.getByLabelText("会议纪要模型")).toHaveValue("deepseek-v4-flash");
@@ -258,7 +298,7 @@ describe("Windows 离线媒体工作台", () => {
     render(<App client={createMockDesktopClient()} />);
     await user.click(screen.getByRole("button", { name: "设置" }));
 
-    const transcriptionSection = await screen.findByRole("region", { name: "语音转写" });
+    const transcriptionSection = await screen.findByRole("region", { name: "本地 ASR 模型" });
     expect(within(transcriptionSection).getByLabelText("语音转写服务商")).toHaveValue("local_funasr");
     expect(within(transcriptionSection).getAllByText(/SenseVoiceSmall/).length).toBeGreaterThan(0);
     expect(within(transcriptionSection).queryByLabelText("语音转写 API Key")).not.toBeInTheDocument();
@@ -269,7 +309,7 @@ describe("Windows 离线媒体工作台", () => {
     render(<App client={createMockDesktopClient()} />);
     await user.click(screen.getByRole("button", { name: "设置" }));
 
-    const transcriptionSection = await screen.findByRole("region", { name: "语音转写" });
+    const transcriptionSection = await screen.findByRole("region", { name: "本地 ASR 模型" });
     expect(within(transcriptionSection).getByText(/%LOCALAPPDATA%\\com\.internal\.meetingdesk\\model\\SenseVoiceSmall/)).toBeInTheDocument();
     expect(within(transcriptionSection).getByText(/下载完成后，将完整的 SenseVoiceSmall 文件夹放到/)).toBeInTheDocument();
     expect(within(transcriptionSection).getByText(/检查通过后，软件默认使用该本地模型转写/)).toBeInTheDocument();
@@ -287,7 +327,7 @@ describe("Windows 离线媒体工作台", () => {
     render(<App client={client} />);
     await user.click(screen.getByRole("button", { name: "设置" }));
 
-    const transcriptionSection = await screen.findByRole("region", { name: "语音转写" });
+    const transcriptionSection = await screen.findByRole("region", { name: "本地 ASR 模型" });
     const modelPath = within(transcriptionSection).getByLabelText("语音转写模型路径");
     expect(modelPath).toHaveValue("");
 
@@ -295,7 +335,7 @@ describe("Windows 离线媒体工作台", () => {
     expect(selectModelDirectory).toHaveBeenCalledOnce();
     expect(modelPath).toHaveValue("D:\\Projects\\funasr-demo\\model\\SenseVoiceSmall");
 
-    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    await user.click(screen.getByRole("button", { name: "保存 ASR 设置" }));
     expect(saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
       transcription: expect.objectContaining({
         localModelPath: "D:\\Projects\\funasr-demo\\model\\SenseVoiceSmall",
@@ -310,9 +350,10 @@ describe("Windows 离线媒体工作台", () => {
     render(<App client={client} />);
     await user.click(screen.getByRole("button", { name: "设置" }));
 
+    await user.click(await screen.findByRole("button", { name: "大模型" }));
     await user.selectOptions(await screen.findByLabelText("会议纪要服务商"), "xiaomi_mimo_llm");
     await user.selectOptions(screen.getByLabelText("会议纪要模型"), "mimo-v2.5-pro");
-    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    await user.click(screen.getByRole("button", { name: "保存大模型设置" }));
     expect(saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
       minutes: expect.objectContaining({
         presetId: "xiaomi_mimo_llm",
@@ -332,7 +373,7 @@ describe("Windows 离线媒体工作台", () => {
     await user.click(screen.getByRole("button", { name: "设置" }));
 
     await screen.findByLabelText("语音转写服务商");
-    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    await user.click(screen.getByRole("button", { name: "保存 ASR 设置" }));
     expect(saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
       transcription: expect.objectContaining({
         presetId: "local_funasr",
@@ -351,13 +392,14 @@ describe("Windows 离线媒体工作台", () => {
     render(<App client={client} />);
     await user.click(screen.getByRole("button", { name: "设置" }));
 
-    expect(await screen.findByRole("heading", { name: "服务设置" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "设置" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "大模型" }));
     await user.selectOptions(screen.getByLabelText("会议纪要服务商"), "deepseek");
     expect(screen.getByLabelText("会议纪要模型")).toHaveValue("deepseek-v4-flash");
 
     const sentinelSecret = "test-only-secret-value";
     await user.type(screen.getByLabelText("会议纪要 API Key"), sentinelSecret);
-    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    await user.click(screen.getByRole("button", { name: "保存大模型设置" }));
 
     expect(await screen.findByText("设置已保存")).toBeInTheDocument();
     expect(screen.queryByDisplayValue(sentinelSecret)).not.toBeInTheDocument();
@@ -391,7 +433,7 @@ describe("Windows 离线媒体工作台", () => {
     expect(screen.queryByText(/Mock/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "打开服务设置" }));
-    expect(await screen.findByRole("heading", { name: "服务设置" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "设置" })).toBeInTheDocument();
   });
 
   it("测试连接会在对应服务区块内返回明确结果", async () => {
@@ -399,7 +441,7 @@ describe("Windows 离线媒体工作台", () => {
     render(<App client={createMockDesktopClient()} />);
 
     await user.click(screen.getByRole("button", { name: "设置" }));
-    const transcriptionSection = await screen.findByRole("region", { name: "语音转写" });
+    const transcriptionSection = await screen.findByRole("region", { name: "本地 ASR 模型" });
     await user.click(within(transcriptionSection).getByRole("button", { name: "检查环境" }));
     expect(await within(transcriptionSection).findByText(/Windows 桌面应用中检查环境/)).toBeInTheDocument();
   });

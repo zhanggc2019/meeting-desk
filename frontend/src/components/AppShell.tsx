@@ -1,10 +1,13 @@
 import { FileStack, ListChecks, NotebookText, Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AppPage } from "../contracts/desktop";
+import type { UpdateService } from "../services/updateService";
 import { useAppStore } from "../stores/appStore";
+import { AppMenu } from "./AppMenu";
 
 interface AppShellProps {
   children: ReactNode;
+  updateService: UpdateService | null;
 }
 
 const navigationItems: Array<{ page: Exclude<AppPage, "meeting-detail">; label: string; icon: typeof FileStack }> = [
@@ -14,7 +17,7 @@ const navigationItems: Array<{ page: Exclude<AppPage, "meeting-detail">; label: 
 ];
 
 /** 提供稳定的企业桌面导航与主工作区布局。 */
-export function AppShell({ children }: AppShellProps) {
+export function AppShell({ children, updateService }: AppShellProps) {
   const page = useAppStore((state) => state.page);
   const navigate = useAppStore((state) => state.navigate);
   const openSettings = useAppStore((state) => state.openSettings);
@@ -23,6 +26,7 @@ export function AppShell({ children }: AppShellProps) {
 
   return (
     <div className="app-shell">
+      <AppMenu updateService={updateService} />
       <aside className="app-sidebar" aria-label="主导航">
         <div className="brand-block">
           <img className="brand-mark" src="/favicon.svg" alt="听见纪要 Logo" />

@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, FolderOpen, KeyRound, LoaderCircle, RotateCcw, Save, Server, ShieldCheck, X } from "lucide-react";
+import { Bot, CheckCircle2, ChevronDown, Cpu, FolderOpen, KeyRound, LoaderCircle, RotateCcw, Save, Server, ShieldCheck, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import type {
   ProviderKind,
@@ -220,6 +220,7 @@ export function SettingsDrawer() {
   const [publicSettings, setPublicSettings] = useState<PublicSettings>(getEmptySettings);
   const [transcription, setTranscription] = useState<ProviderDraft>(() => toDraft(getEmptySettings().transcription, "transcription"));
   const [minutes, setMinutes] = useState<ProviderDraft>(() => toDraft(getEmptySettings().minutes, "minutes"));
+  const [activeSection, setActiveSection] = useState<ProviderTarget>("transcription");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -228,8 +229,10 @@ export function SettingsDrawer() {
 
   useEffect(() => {
     if (!open) return;
+    setActiveSection("transcription");
     setLoading(true);
     setError(null);
+    setNotice(null);
     setConnectionTests(getEmptyConnectionTests());
     client.getPublicSettings()
       .then((settings) => {
@@ -309,6 +312,13 @@ export function SettingsDrawer() {
     }));
   }
 
+  /** 切换设置分类，并清除只属于上一个分类的临时提示。 */
+  function changeSection(target: ProviderTarget) {
+    setActiveSection(target);
+    setError(null);
+    setNotice(null);
+  }
+
   if (!open) return null;
 
   return (
@@ -316,44 +326,58 @@ export function SettingsDrawer() {
       <button className="drawer-backdrop" type="button" aria-label="关闭设置" onClick={close} />
       <aside className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header className="drawer-header">
-          <div><span className="eyebrow">安全配置</span><h2 id="settings-title">服务设置</h2><p>语音在本机转写；会议纪要服务密钥保存后不会回显。</p></div>
+          <div><span className="eyebrow">偏好设置</span><h2 id="settings-title">设置</h2><p>本地转写与纪要生成服务分开配置、独立检查。</p></div>
           <button className="icon-button" type="button" aria-label="关闭设置" onClick={close} disabled={saving}><X size={18} /></button>
         </header>
 
-        {loading ? <div className="loading-state"><LoaderCircle className="spin" size={18} aria-hidden="true" />正在读取公开设置…</div> : (
-          <form className="settings-form" onSubmit={handleSave}>
-            <div className="settings-form-scroll">
-              <ProviderSection
-                target="transcription"
-                title="语音转写"
-                description="接收离线音频或视频并返回完整逐字稿"
-                value={transcription}
-                secretConfigured={isSecretConfiguredForDraft(publicSettings.transcription, transcription, "transcription")}
-                connectionTest={connectionTests.transcription}
-                onChange={(value) => updateProvider("transcription", value)}
-                onTest={() => void testConnection("transcription")}
-              />
-              <ProviderSection
-                target="minutes"
-                title="会议纪要"
-                description="把逐字稿转换为经过校验的结构化纪要"
-                value={minutes}
-                secretConfigured={isSecretConfiguredForDraft(publicSettings.minutes, minutes, "minutes")}
-                connectionTest={connectionTests.minutes}
-                onChange={(value) => updateProvider("minutes", value)}
-                onTest={() => void testConnection("minutes")}
-              />
+        <div className="settings-window-body">
+          <nav className="settings-category-nav" aria-label="设置分类">
+            <button className="settings-category-button" type="button" aria-label="本地 ASR" aria-current={activeSection === "transcription" ? "page" : undefined} onClick={() => changeSection("transcription")}>
+              <Cpu size={17} aria-hidden="true" /><span><strong>本地 ASR</strong><small>模型与运行环境</small></span>
+            </button>
+            <button className="settings-category-button" type="button" aria-label="大模型" aria-current={activeSection === "minutes" ? "page" : undefined} onClick={() => changeSection("minutes")}>
+              <Bot size={17} aria-hidden="true" /><span><strong>大模型</strong><small>纪要生成服务</small></span>
+            </button>
+          </nav>
 
-              {error ? <div className="inline-alert error" role="alert">{error}</div> : null}
-              {notice ? <div className="inline-alert success" role="status"><CheckCircle2 size={16} aria-hidden="true" />{notice}</div> : null}
-            </div>
+          {loading ? <div className="loading-state settings-loading"><LoaderCircle className="spin" size={18} aria-hidden="true" />正在读取公开设置…</div> : (
+            <form className="settings-form" onSubmit={handleSave}>
+              <div className="settings-form-scroll">
+                {activeSection === "transcription" ? (
+                  <ProviderSection
+                    target="transcription"
+                    title="本地 ASR 模型"
+                    description="管理模型目录、运行参数并检查本地转写环境"
+                    value={transcription}
+                    secretConfigured={isSecretConfiguredForDraft(publicSettings.transcription, transcription, "transcription")}
+                    connectionTest={connectionTests.transcription}
+                    onChange={(value) => updateProvider("transcription", value)}
+                    onTest={() => void testConnection("transcription")}
+                  />
+                ) : (
+                  <ProviderSection
+                    target="minutes"
+                    title="纪要生成大模型"
+                    description="管理服务商、模型与保存在 Windows 凭据管理器中的密钥"
+                    value={minutes}
+                    secretConfigured={isSecretConfiguredForDraft(publicSettings.minutes, minutes, "minutes")}
+                    connectionTest={connectionTests.minutes}
+                    onChange={(value) => updateProvider("minutes", value)}
+                    onTest={() => void testConnection("minutes")}
+                  />
+                )}
 
-            <div className="drawer-actions">
-              <button className="button secondary" type="button" onClick={close} disabled={saving}>取消</button>
-              <button className="button primary" type="submit" disabled={saving}><Save size={16} aria-hidden="true" />{saving ? "正在保存" : "保存设置"}</button>
-            </div>
-          </form>
-        )}
+                {error ? <div className="inline-alert error" role="alert">{error}</div> : null}
+                {notice ? <div className="inline-alert success" role="status"><CheckCircle2 size={16} aria-hidden="true" />{notice}</div> : null}
+              </div>
+
+              <div className="drawer-actions">
+                <button className="button secondary" type="button" onClick={close} disabled={saving}>取消</button>
+                <button className="button primary" type="submit" disabled={saving}><Save size={16} aria-hidden="true" />{saving ? "正在保存" : activeSection === "transcription" ? "保存 ASR 设置" : "保存大模型设置"}</button>
+              </div>
+            </form>
+          )}
+        </div>
       </aside>
     </div>
   );
@@ -374,6 +398,7 @@ interface ProviderSectionProps {
 function ProviderSection({ target, title, description, value, secretConfigured, connectionTest, onChange, onTest }: ProviderSectionProps) {
   const client = useDesktopClient();
   const presets = getPresetDefinitions(target);
+  const fieldLabelPrefix = target === "transcription" ? "语音转写" : "会议纪要";
   const selectedPreset = getPresetDefinition(target, value.presetId);
   const isCustom = isCustomPreset(selectedPreset.id);
   const isLocal = selectedPreset.kind === "local_funasr";
@@ -410,7 +435,7 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
       <div className="settings-grid">
         <label className="field full-field">服务商
           <select
-            aria-label={`${title}服务商`}
+            aria-label={`${fieldLabelPrefix}服务商`}
             value={value.presetId}
             onChange={(event) => handlePresetChange(event.target.value as ProviderPresetId)}
           >
@@ -467,7 +492,7 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
 
         {selectedPreset.models.length > 0 ? (
           <label className="field full-field">模型
-            <select aria-label={`${title}模型`} value={value.model} onChange={(event) => update("model", event.target.value)}>
+            <select aria-label={`${fieldLabelPrefix}模型`} value={value.model} onChange={(event) => update("model", event.target.value)}>
               {selectedPreset.models.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
             </select>
           </label>
@@ -476,17 +501,17 @@ function ProviderSection({ target, title, description, value, secretConfigured, 
         {isCustom ? (
           <>
             <label className="field full-field">服务地址
-              <input aria-label={`${title}服务地址`} value={value.endpoint} onChange={(event) => update("endpoint", event.target.value)} placeholder="https://…" required />
+              <input aria-label={`${fieldLabelPrefix}服务地址`} value={value.endpoint} onChange={(event) => update("endpoint", event.target.value)} placeholder="https://…" required />
             </label>
             <label className="field full-field">模型
-              <input aria-label={`${title}模型`} value={value.model} onChange={(event) => update("model", event.target.value)} placeholder="输入已验证的模型名" required />
+              <input aria-label={`${fieldLabelPrefix}模型`} value={value.model} onChange={(event) => update("model", event.target.value)} placeholder="输入已验证的模型名" required />
             </label>
           </>
         ) : null}
 
         {!isLocal ? (
           <label className="field full-field">API Key
-            <span className="secret-input"><KeyRound size={16} aria-hidden="true" /><input aria-label={`${title} API Key`} value={value.apiKey} onChange={(event) => update("apiKey", event.target.value)} type="password" autoComplete="new-password" placeholder={secretConfigured ? "已安全保存；留空表示不替换" : "输入后交由 Windows 凭据管理器保存"} /></span>
+            <span className="secret-input"><KeyRound size={16} aria-hidden="true" /><input aria-label={`${fieldLabelPrefix} API Key`} value={value.apiKey} onChange={(event) => update("apiKey", event.target.value)} type="password" autoComplete="new-password" placeholder={secretConfigured ? "已安全保存；留空表示不替换" : "输入后交由 Windows 凭据管理器保存"} /></span>
           </label>
         ) : null}
       </div>

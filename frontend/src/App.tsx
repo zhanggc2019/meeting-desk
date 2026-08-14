@@ -43,7 +43,7 @@ export function App({ client, updateService }: AppProps) {
 
   return (
     <DesktopClientProvider client={resolvedClient}>
-      <AppShell><UpdateBanner service={resolvedUpdateService} /><CurrentPage /></AppShell>
+      <AppShell updateService={resolvedUpdateService}><UpdateBanner service={resolvedUpdateService} /><CurrentPage /></AppShell>
       <SettingsDrawer />
     </DesktopClientProvider>
   );

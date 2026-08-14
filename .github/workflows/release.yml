@@ -75,10 +75,10 @@ jobs:
           tagName: v__VERSION__
           releaseName: 听见纪要 v__VERSION__
           releaseBody: |
-            - 修复安装版侧栏 Logo 加载失败的问题，并将新版蓝色麦克风图标应用到 Windows 程序和安装包。
-            - 修复失败和中断任务的删除按钮文字与图标不可见的问题。
-            - 改进本地转写任务的阶段、进度和错误诊断信息。
-            - 继续内置本地 FunASR Python 运行时；模型文件仍由用户单独下载后放置或选择，不包含在升级包中。
+            - 将本地 ASR 模型与纪要生成大模型拆分为独立设置分类，分别管理和检查。
+            - 左上角新增帮助与关于窗口，关于窗口显示当前版本并支持手动检查、下载和安装更新。
+            - 优化设置窗口在常用桌面尺寸和最小窗口下的布局，同时保留听见纪要品牌 Logo。
+            - 继续内置本地 FunASR Python 运行时；模型文件由用户单独下载后放置或选择，不包含在安装包和升级包中。
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true
