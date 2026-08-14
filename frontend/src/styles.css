@@ -219,6 +219,8 @@ select:focus-visible,
 .button.text-only { min-height: auto; padding: 4px; color: var(--accent); background: transparent; }
 .button.danger { color: #fff; background: var(--danger); }
 .button.table-action { min-height: 30px; padding: 0 9px; background: var(--surface); border-color: var(--line); font-size: 12px; }
+.button.table-action.delete-action { color: #b42318; background: #fff7f6; border-color: #f0b7b2; }
+.button.table-action.delete-action:hover:not(:disabled) { background: #feeceb; border-color: #dc827a; }
 
 .icon-button {
   display: inline-grid;

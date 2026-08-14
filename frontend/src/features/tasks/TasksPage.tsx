@@ -185,7 +185,7 @@ export function TasksPage() {
                       <td className="cell-actions">
                         {task.availableActions.includes("cancel") ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); setCancelTaskId(task.id); }} disabled={busyTaskId === task.id}>取消</button> : null}
                         {task.availableActions.includes("retry") ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); void retryTask(task.id); }} disabled={busyTaskId === task.id}><RotateCcw size={14} aria-hidden="true" />重试</button> : null}
-                        {task.availableActions.includes("delete") ? <button className="button table-action danger" type="button" onClick={(event) => { event.stopPropagation(); setDeleteTaskId(task.id); }} disabled={busyTaskId === task.id}><Trash2 size={14} aria-hidden="true" />删除</button> : null}
+                        {task.availableActions.includes("delete") ? <button className="button table-action delete-action" type="button" onClick={(event) => { event.stopPropagation(); setDeleteTaskId(task.id); }} disabled={busyTaskId === task.id}><Trash2 size={14} aria-hidden="true" />删除</button> : null}
                         {task.availableActions.includes("reselectFile") ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); void reselectTaskAudio(task.id); }} disabled={busyTaskId === task.id}>重新选择</button> : null}
                         {task.availableActions.includes("openMeeting") && task.meetingId ? <button className="button table-action" type="button" onClick={(event) => { event.stopPropagation(); openMeeting(task.meetingId!); }}>查看</button> : null}
                       </td>

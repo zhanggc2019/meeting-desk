@@ -171,7 +171,9 @@ describe("Windows 离线媒体工作台", () => {
 
     const failedRow = (await screen.findByText("客户访谈.mp3")).closest("tr");
     expect(failedRow).not.toBeNull();
-    await user.click(within(failedRow!).getByRole("button", { name: "删除" }));
+    const deleteButton = within(failedRow!).getByRole("button", { name: "删除" });
+    expect(deleteButton).toHaveClass("delete-action");
+    await user.click(deleteButton);
 
     const dialog = screen.getByRole("alertdialog");
     expect(within(dialog).getByText(/只会删除任务记录和受管临时文件/)).toBeInTheDocument();

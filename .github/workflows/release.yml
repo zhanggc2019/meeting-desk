@@ -75,10 +75,10 @@ jobs:
           tagName: v__VERSION__
           releaseName: 听见纪要 v__VERSION__
           releaseBody: |
-            - 失败和中断的任务现在可以从任务队列中删除。
-            - 删除任务时同步清理不再使用的受管临时文件，不会删除用户原始文件。
-            - 修复本地 FunASR 转写时弹出终端窗口的问题。
-            - 继续内置本地 FunASR Python 运行时，模型文件仍由用户单独放置或选择。
+            - 修复安装版侧栏 Logo 加载失败的问题，并将新版蓝色麦克风图标应用到 Windows 程序和安装包。
+            - 修复失败和中断任务的删除按钮文字与图标不可见的问题。
+            - 改进本地转写任务的阶段、进度和错误诊断信息。
+            - 继续内置本地 FunASR Python 运行时；模型文件仍由用户单独下载后放置或选择，不包含在升级包中。
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true
