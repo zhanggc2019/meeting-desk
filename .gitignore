@@ -80,6 +80,10 @@ blob-report/
 output/
 _tauri_seed/
 
+# Agent / 宿主工具元数据（含本地路径与截图附件，禁止提交）
+.reasonix/
+reasonix.toml
+
 # IDE / Windows / macOS
 .vscode/
 .idea/
