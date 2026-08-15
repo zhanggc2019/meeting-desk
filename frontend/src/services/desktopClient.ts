@@ -9,6 +9,7 @@ import type {
   MeetingSummary,
   MinutesTemplate,
   PageResult,
+  PlaybackResult,
   ProcessingTask,
   ProviderSettingsInput,
   PublicSettings,
@@ -31,6 +32,7 @@ export const DESKTOP_COMMANDS = {
   listMeetingsPage: "list_meetings_page",
   getMeetingDetail: "get_meeting_detail",
   getMeetingMarkdownPreview: "get_meeting_markdown_preview",
+  playMeetingMedia: "play_meeting_media",
   deleteMeeting: "delete_meeting",
   exportMeetingMarkdown: "export_meeting_markdown",
   listMinutesTemplates: "list_minutes_templates",
@@ -71,6 +73,8 @@ export interface DesktopClient {
   getMeetingDetail(meetingId: string): Promise<MeetingDetail>;
   /** 返回与导出文件一致的 Markdown 文本，仅用于本地预览。 */
   getMeetingMarkdownPreview(meetingId: string): Promise<string>;
+  /** 使用 Windows 默认播放器试听原始媒体，必要时引导重新关联文件。 */
+  playMeetingMedia(meetingId: string): Promise<PlaybackResult>;
   /** 删除本地会议、逐字稿、纪要及关联任务，不接触用户原始文件。 */
   deleteMeeting(meetingId: string): Promise<boolean>;
   /** 使用桌面保存对话框导出 Markdown。 */
@@ -152,6 +156,9 @@ export function createTauriDesktopClient(): DesktopClient {
     },
     async getMeetingMarkdownPreview(meetingId) {
       return invoke<string>(DESKTOP_COMMANDS.getMeetingMarkdownPreview, { meetingId });
+    },
+    async playMeetingMedia(meetingId) {
+      return invoke<PlaybackResult>(DESKTOP_COMMANDS.playMeetingMedia, { meetingId });
     },
     async deleteMeeting(meetingId) {
       return invoke<boolean>(DESKTOP_COMMANDS.deleteMeeting, { meetingId });

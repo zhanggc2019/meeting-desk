@@ -76,7 +76,7 @@ fn prompt_request<'a>(fixture: &'a FixtureRequest) -> PromptBuildRequest<'a> {
     }
 }
 
-/// 验证内置 Schema 是唯一、可解析的 Draft 2020-12 v1.0.0 规范。
+/// 验证内置 Schema 是唯一、可解析的 Draft 2020-12 v1.1.0 规范。
 #[test]
 fn embedded_schema_has_expected_identity_and_required_fields() {
     let schema = meeting_minutes_schema().expect("embedded schema");
@@ -84,13 +84,16 @@ fn embedded_schema_has_expected_identity_and_required_fields() {
         schema["$schema"],
         "https://json-schema.org/draft/2020-12/schema"
     );
-    assert_eq!(schema["$id"], "urn:funasr-demo:meeting-minutes:1.0.0");
+    assert_eq!(schema["$id"], "urn:funasr-demo:meeting-minutes:1.1.0");
     assert_eq!(schema["additionalProperties"], false);
     assert_eq!(
         schema["properties"]["schemaVersion"]["const"],
         MEETING_MINUTES_SCHEMA_VERSION
     );
-    assert_eq!(schema["required"].as_array().map(Vec::len), Some(11));
+    assert_eq!(schema["required"].as_array().map(Vec::len), Some(12));
+    assert!(schema["required"]
+        .as_array()
+        .is_some_and(|fields| fields.iter().any(|field| field == "contentType")));
 }
 
 /// 验证全部内置模板 ID、版本和稳定顺序。
@@ -104,6 +107,7 @@ fn template_registry_contains_all_versioned_templates_in_stable_order() {
         "course_summary",
         "research_project",
         "academic_lecture",
+        "speech_summary",
         "profile_interview",
         "in_depth_interview",
         "business_plan",
@@ -173,11 +177,39 @@ fn adaptive_prompt_requires_content_driven_structure_without_schema_changes() {
     assert_eq!(built.template_id(), ADAPTIVE_TEMPLATE_ID);
     assert_eq!(built.template_version(), BUILTIN_TEMPLATE_VERSION);
     assert!(prompt.contains("DESCRIPTION: 由模型根据转写内容"));
-    assert!(prompt.contains("先仅基于转写内容判断"));
-    assert!(prompt.contains("现有严格 MeetingMinutes JSON Schema"));
-    assert!(prompt.contains("不得新增、删除或重命名 Schema 字段"));
+    assert!(prompt.contains("先仅基于转写内容选择 contentType"));
+    assert!(prompt.contains("多人协商、确认或任务协调才是 meeting"));
+    assert!(prompt.contains("单人连续表达观点、主题分享或致辞是 speech"));
+    assert!(prompt.contains("不能因为出现‘我们’、多人声道或工作术语就判为会议"));
     assert!(prompt.contains("不得编造"));
     assert_eq!(built.output_schema(), &meeting_minutes_schema().unwrap());
+}
+
+/// 验证新模型输出必须显式声明内容类型，不能静默回退为会议。
+#[test]
+fn rejects_candidate_without_content_type() {
+    let fixture = fixture_request(NO_CONTEXT_REQUEST);
+    let mut value: serde_json::Value =
+        serde_json::from_str(NO_CONTEXT_MINUTES).expect("minutes value");
+    value
+        .as_object_mut()
+        .expect("minutes object")
+        .remove("contentType");
+
+    let error = validate_provider_candidate(
+        MinutesCandidate {
+            schema_version: MEETING_MINUTES_SCHEMA_VERSION.to_string(),
+            value,
+            provider_metadata: fixture.transcript.provider_metadata.clone(),
+        },
+        MEETING_MINUTES_SCHEMA_VERSION,
+        &fixture.transcript,
+        &fixture.context,
+        fixture.validation_options(),
+    )
+    .expect_err("missing content type");
+
+    assert_eq!(error.code(), "missing_content_type");
 }
 
 /// 验证 Prompt 分层、JSON 数据隔离和 Debug 遮蔽不会被 transcript 指令改变。
@@ -529,6 +561,50 @@ fn renders_stable_escaped_markdown_without_transcript() {
         .map(|heading| markdown.find(heading).expect("heading"))
         .collect::<Vec<_>>();
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+/// 验证演讲导出使用内容型章节，并省略空的会议决策、待办和风险章节。
+#[test]
+fn renders_speech_markdown_without_empty_meeting_sections() {
+    let mut minutes = fixture_minutes(STANDARD_MINUTES);
+    minutes.content_type = ContentType::Speech;
+    minutes.meeting_time = MeetingTime {
+        start_at: None,
+        end_at: None,
+    };
+    minutes.participants.clear();
+    minutes.decisions.clear();
+    minutes.action_items.clear();
+    minutes.risks_and_issues.clear();
+
+    let markdown = render_minutes_markdown(&minutes);
+    assert!(markdown.contains("- 内容类型：演讲"));
+    assert!(markdown.contains("## 内容概览"));
+    assert!(markdown.contains("## 演讲脉络"));
+    assert!(markdown.contains("## 核心观点"));
+    assert!(!markdown.contains("## 会议摘要"));
+    assert!(!markdown.contains("## 决策事项"));
+    assert!(!markdown.contains("## 待办事项"));
+    assert!(!markdown.contains("## 风险和问题"));
+}
+
+/// 验证非会议类型移除会议专属字段，且课程仍保留有证据的学习任务。
+#[test]
+fn normalizes_fields_for_non_meeting_content_types() {
+    let mut speech = fixture_minutes(STANDARD_MINUTES);
+    speech.content_type = ContentType::Speech;
+    normalize_content_type_fields(&mut speech);
+    assert_eq!(speech.meeting_time.start_at, None);
+    assert_eq!(speech.meeting_time.end_at, None);
+    assert!(speech.participants.is_empty());
+    assert!(speech.decisions.is_empty());
+    assert!(speech.action_items.is_empty());
+
+    let mut course = fixture_minutes(STANDARD_MINUTES);
+    course.content_type = ContentType::Course;
+    normalize_content_type_fields(&mut course);
+    assert!(course.decisions.is_empty());
+    assert!(!course.action_items.is_empty());
 }
 
 /// 验证错误和 Debug 输出不复制模型正文或完整 transcript。

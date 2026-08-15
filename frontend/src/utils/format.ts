@@ -6,8 +6,8 @@ const taskStatusLabels: Record<TaskStatus, string> = {
   uploading: "正在上传",
   transcribing: "正在转写",
   validating_transcript: "正在校验转写结果",
-  summarizing: "正在生成会议纪要",
-  validating_minutes: "正在校验会议纪要",
+  summarizing: "正在生成 AI 总结",
+  validating_minutes: "正在校验 AI 总结",
   saving: "正在保存",
   retry_wait: "等待重试",
   cancel_requested: "正在取消",
@@ -53,8 +53,8 @@ export function formatRelativeDate(value: string): string {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
-/** 将段落时间戳格式化为方括号时分秒。 */
+/** 将段落时间戳格式化为紧凑的时分秒。 */
 export function formatTimestamp(value: number | undefined): string {
   if (value === undefined) return "";
-  return `[${formatDuration(value)}]`;
+  return formatDuration(value);
 }

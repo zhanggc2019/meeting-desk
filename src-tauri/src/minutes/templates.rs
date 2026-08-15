@@ -1,4 +1,4 @@
-use super::MinutesError;
+use super::{ContentType, MinutesError};
 
 /// 标准会议模板 ID。
 pub const STANDARD_MEETING_TEMPLATE_ID: &str = "standard_meeting";
@@ -12,6 +12,8 @@ pub const COURSE_SUMMARY_TEMPLATE_ID: &str = "course_summary";
 pub const RESEARCH_PROJECT_TEMPLATE_ID: &str = "research_project";
 /// 学术讲座模板 ID。
 pub const ACADEMIC_LECTURE_TEMPLATE_ID: &str = "academic_lecture";
+/// 演讲总结模板 ID。
+pub const SPEECH_SUMMARY_TEMPLATE_ID: &str = "speech_summary";
 /// 人物专访模板 ID。
 pub const PROFILE_INTERVIEW_TEMPLATE_ID: &str = "profile_interview";
 /// 深度访谈模板 ID。
@@ -80,7 +82,15 @@ const ACADEMIC_LECTURE: MinutesTemplate = MinutesTemplate {
     version: BUILTIN_TEMPLATE_VERSION,
     display_name: "学术讲座",
     description: "适用于学术报告、主题演讲与专家问答。",
-    instructions: "摘要突出讲座主旨与学术价值，主要议题按理论背景、核心论点、证据或案例、局限与问答组织。区分讲者主张、引用他人观点和听众提问；未得到回答的问题纳入风险和问题，不补写缺失的文献、数据或结论。",
+    instructions: "contentType 使用 lecture。摘要突出讲座主旨与学术价值，主要议题按理论背景、核心论点、证据或案例、局限与问答组织。区分讲者主张、引用他人观点和听众提问；未得到回答的问题纳入风险和问题，不补写缺失的文献、数据或结论。",
+};
+
+const SPEECH_SUMMARY: MinutesTemplate = MinutesTemplate {
+    id: SPEECH_SUMMARY_TEMPLATE_ID,
+    version: BUILTIN_TEMPLATE_VERSION,
+    display_name: "演讲总结",
+    description: "适用于主题演讲、分享、致辞与单人观点陈述。",
+    instructions: "contentType 使用 speech。以听众快速回顾为目标，按演讲推进顺序组织主题脉络、核心观点、论据、案例和启发。讲者的观点不能改写为会议共识、决策或团队待办；除非原文明示真实执行承诺，否则 decisions 和 actionItems 必须为空。",
 };
 
 const PROFILE_INTERVIEW: MinutesTemplate = MinutesTemplate {
@@ -120,22 +130,42 @@ const ADAPTIVE: MinutesTemplate = MinutesTemplate {
     version: BUILTIN_TEMPLATE_VERSION,
     display_name: "自适应模板",
     description: "由模型根据转写内容选择最合适的组织重点。",
-    instructions: "先仅基于转写内容判断其主要类型和最合适的文档组织方式，再在现有严格 MeetingMinutes JSON Schema 内调整摘要、议题、结论、决策、待办与风险问题的关注重点。不得新增、删除或重命名 Schema 字段，不得输出模板选择过程，不得编造转写和可信上下文中不存在的事实。",
+    instructions: "先仅基于转写内容选择 contentType：多人协商、确认或任务协调才是 meeting；单人连续表达观点、主题分享或致辞是 speech；知识讲解按 lecture 或 course；问答主导是 interview；工作进展陈述但没有协商过程是 report；写作口述素材是 article_material；证据不足使用 other。不能因为出现‘我们’、多人声道或工作术语就判为会议。非会议内容按主题脉络组织 topics，把 conclusions 作为核心观点或知识点；不得把讲者观点、建议、案例和修辞句改成会议决策或团队待办，未出现明确执行承诺时 decisions 和 actionItems 必须为空。不得输出判断过程，不得编造转写和可信上下文中不存在的事实。",
 };
 
-const TEMPLATES: [MinutesTemplate; 11] = [
+const TEMPLATES: [MinutesTemplate; 12] = [
     STANDARD_MEETING,
     PROJECT_WEEKLY,
     CUSTOMER_COMMUNICATION,
     COURSE_SUMMARY,
     RESEARCH_PROJECT,
     ACADEMIC_LECTURE,
+    SPEECH_SUMMARY,
     PROFILE_INTERVIEW,
     IN_DEPTH_INTERVIEW,
     BUSINESS_PLAN,
     ARTICLE_OUTLINE,
     ADAPTIVE,
 ];
+
+/// 返回手动模板对应的可信内容类型；自适应模板由模型依据正文分类。
+pub fn content_type_for_template(template_id: &str) -> Option<ContentType> {
+    match template_id {
+        STANDARD_MEETING_TEMPLATE_ID
+        | PROJECT_WEEKLY_TEMPLATE_ID
+        | CUSTOMER_COMMUNICATION_TEMPLATE_ID => Some(ContentType::Meeting),
+        COURSE_SUMMARY_TEMPLATE_ID => Some(ContentType::Course),
+        RESEARCH_PROJECT_TEMPLATE_ID | BUSINESS_PLAN_TEMPLATE_ID => Some(ContentType::Report),
+        ACADEMIC_LECTURE_TEMPLATE_ID => Some(ContentType::Lecture),
+        SPEECH_SUMMARY_TEMPLATE_ID => Some(ContentType::Speech),
+        PROFILE_INTERVIEW_TEMPLATE_ID | IN_DEPTH_INTERVIEW_TEMPLATE_ID => {
+            Some(ContentType::Interview)
+        }
+        ARTICLE_OUTLINE_TEMPLATE_ID => Some(ContentType::ArticleMaterial),
+        ADAPTIVE_TEMPLATE_ID => None,
+        _ => None,
+    }
+}
 
 /// 返回稳定顺序的全部内置模板。
 pub fn list_templates() -> &'static [MinutesTemplate] {

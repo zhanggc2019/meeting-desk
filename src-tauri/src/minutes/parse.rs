@@ -77,6 +77,12 @@ fn parse_and_validate_value(
     context: &MeetingContext,
     options: ValidationOptions,
 ) -> Result<MeetingMinutes, MinutesError> {
+    if value.get("contentType").is_none() {
+        return Err(MinutesError::SchemaViolation {
+            code: "missing_content_type",
+            path: "/contentType",
+        });
+    }
     let minutes: MeetingMinutes =
         serde_json::from_value(value).map_err(|_| MinutesError::SchemaViolation {
             code: "invalid_minutes_shape",

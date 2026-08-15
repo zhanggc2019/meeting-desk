@@ -103,6 +103,8 @@ pub struct MeetingListItem {
 pub struct MeetingDetail {
     pub id: String,
     pub source_name: String,
+    #[serde(skip_serializing, default)]
+    pub source_path: Option<String>,
     pub template_id: String,
     pub transcript: String,
     pub transcript_segments: Value,
@@ -116,6 +118,7 @@ pub struct MeetingDetail {
 pub struct PersistedMeetingInput {
     pub id: String,
     pub source_name: String,
+    pub source_path: Option<String>,
     pub title: String,
     pub template_id: String,
     pub transcript: String,

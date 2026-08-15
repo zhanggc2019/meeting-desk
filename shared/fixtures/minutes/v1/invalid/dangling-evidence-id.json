@@ -1,5 +1,6 @@
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.1.0",
+  "contentType": "meeting",
   "title": "匿名项目评审会",
   "titleSource": "context",
   "meetingTime": {

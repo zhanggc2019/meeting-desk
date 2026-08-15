@@ -19,6 +19,7 @@ const templates: MinutesTemplate[] = [
   { id: "course_summary", version: "1.0.0", name: "课程总结", description: "提炼知识框架、核心概念、案例与复习要点" },
   { id: "research_project", version: "1.0.0", name: "课题研究", description: "聚焦研究问题、方法、证据、进展与下一步" },
   { id: "academic_lecture", version: "1.0.0", name: "学术讲座", description: "整理主题脉络、关键论点、研究发现与启发" },
+  { id: "speech_summary", version: "1.0.0", name: "演讲总结", description: "按表达脉络整理主题演讲、分享与致辞，不生成虚假会议待办" },
   { id: "profile_interview", version: "1.0.0", name: "人物专访", description: "保留人物经历、观点、故事线与代表性表达" },
   { id: "in_depth_interview", version: "1.0.0", name: "深度访谈", description: "按议题组织问答、洞察、矛盾点与待核实信息" },
   { id: "business_plan", version: "1.0.0", name: "商业计划书", description: "梳理市场机会、方案、商业模式、里程碑与风险" },
@@ -27,12 +28,14 @@ const templates: MinutesTemplate[] = [
 
 const meeting: MeetingDetail = {
   id: "meeting-demo-1",
+  sourceName: "产品交付节奏讨论.m4a",
   templateName: "标准会议纪要",
   durationMs: 2_430_000,
   processingDurationMs: 1_320_000,
   createdAt: "2026-07-17T06:30:00Z",
   minutes: {
-    schemaVersion: "1.0.0",
+    schemaVersion: "1.1.0",
+    contentType: "meeting",
     title: "产品交付节奏讨论",
     titleSource: "generated",
     meetingTime: { startAt: null, endAt: null },
@@ -440,6 +443,12 @@ export function createMockDesktopClient(): DesktopClient {
         throw new Error("无法预览：会议记录不存在");
       }
       return createMeetingMarkdown();
+    },
+    async playMeetingMedia(meetingId) {
+      if (meetingDeleted || meetingId !== meeting.id) {
+        throw new Error("无法试听：录音记录不存在");
+      }
+      return { status: "opened", reboundSource: false };
     },
     async deleteMeeting(meetingId) {
       if (meetingDeleted || meetingId !== meeting.id) return false;

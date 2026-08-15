@@ -66,6 +66,7 @@ impl MeetingRepository {
             CREATE TABLE IF NOT EXISTS meetings (
                 id TEXT PRIMARY KEY,
                 source_name TEXT NOT NULL,
+                source_path TEXT,
                 title TEXT NOT NULL,
                 template_id TEXT NOT NULL,
                 schema_version TEXT NOT NULL,
@@ -95,6 +96,24 @@ impl MeetingRepository {
             CREATE INDEX IF NOT EXISTS idx_meetings_title ON meetings(title);
             "#,
         )?;
+        self.ensure_meeting_source_path_column()?;
+        Ok(())
+    }
+
+    /// 为升级前的数据库补充原始媒体路径列，同时保持迁移幂等。
+    fn ensure_meeting_source_path_column(&self) -> Result<(), StorageError> {
+        let connection = self.lock()?;
+        let has_column = {
+            let mut statement = connection.prepare("PRAGMA table_info(meetings)")?;
+            let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+            columns
+                .collect::<Result<Vec<_>, _>>()?
+                .iter()
+                .any(|column| column == "source_path")
+        };
+        if !has_column {
+            connection.execute("ALTER TABLE meetings ADD COLUMN source_path TEXT", [])?;
+        }
         Ok(())
     }
 
@@ -128,13 +147,26 @@ impl MeetingRepository {
         now: &str,
     ) -> Result<(), StorageError> {
         transaction.execute(
-            "INSERT INTO meetings(id, source_name, title, template_id, schema_version, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-             ON CONFLICT(id) DO UPDATE SET source_name = excluded.source_name, title = excluded.title,
+            "INSERT INTO meetings(id, source_name, source_path, title, template_id, schema_version, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+             ON CONFLICT(id) DO UPDATE SET source_name = excluded.source_name,
+             source_path = COALESCE(excluded.source_path, meetings.source_path), title = excluded.title,
              template_id = excluded.template_id, schema_version = excluded.schema_version, updated_at = excluded.updated_at",
-            params![input.id, input.source_name, input.title, input.template_id, input.schema_version, now],
+            params![input.id, input.source_name, input.source_path, input.title, input.template_id, input.schema_version, now],
         )?;
         Ok(())
+    }
+
+    /// 更新指定会议关联的原始媒体路径，供旧记录重新选择后继续试听。
+    pub fn set_meeting_source_path(
+        &self,
+        meeting_id: &str,
+        source_path: &str,
+    ) -> Result<bool, StorageError> {
+        Ok(self.lock()?.execute(
+            "UPDATE meetings SET source_path = ?2 WHERE id = ?1",
+            params![meeting_id, source_path],
+        )? > 0)
     }
 
     /// 保存不包含秘密和会议正文的任务快照。
@@ -358,7 +390,7 @@ impl MeetingRepository {
         let connection = self.lock()?;
         let row = connection
             .query_row(
-                "SELECT m.id, m.source_name, m.template_id, t.full_text, t.segments_json,
+                "SELECT m.id, m.source_name, m.source_path, m.template_id, t.full_text, t.segments_json,
                         n.minutes_json, m.created_at, m.updated_at
                  FROM meetings m JOIN transcripts t ON t.meeting_id = m.id
                  JOIN minutes n ON n.meeting_id = m.id WHERE m.id = ?1",
@@ -367,12 +399,13 @@ impl MeetingRepository {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(2)?,
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
                         row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
                     ))
                 },
             )
@@ -381,12 +414,13 @@ impl MeetingRepository {
             Ok(MeetingDetail {
                 id: value.0,
                 source_name: value.1,
-                template_id: value.2,
-                transcript: value.3,
-                transcript_segments: serde_json::from_str(&value.4)?,
-                minutes: serde_json::from_str(&value.5)?,
-                created_at: value.6,
-                updated_at: value.7,
+                source_path: value.2,
+                template_id: value.3,
+                transcript: value.4,
+                transcript_segments: serde_json::from_str(&value.5)?,
+                minutes: serde_json::from_str(&value.6)?,
+                created_at: value.7,
+                updated_at: value.8,
             })
         })
         .transpose()
@@ -494,6 +528,7 @@ mod tests {
         PersistedMeetingInput {
             id: "meeting-1".into(),
             source_name: "sample.mp3".into(),
+            source_path: Some("D:\\Recordings\\sample.mp3".into()),
             title: "示例会议".into(),
             template_id: "standard_meeting".into(),
             transcript: "这是一段人工测试文本。".into(),
@@ -553,8 +588,15 @@ mod tests {
 
         let meetings = repository.search_meetings("示例").expect("search meeting");
         assert_eq!(meetings.len(), 1);
-        let detail = repository.get_meeting("meeting-1").expect("get meeting");
-        assert_eq!(detail.expect("detail").transcript, "这是一段人工测试文本。");
+        let detail = repository
+            .get_meeting("meeting-1")
+            .expect("get meeting")
+            .expect("detail");
+        assert_eq!(detail.transcript, "这是一段人工测试文本。");
+        assert_eq!(
+            detail.source_path.as_deref(),
+            Some("D:\\Recordings\\sample.mp3")
+        );
         let mut task = task_fixture("meeting-task");
         task.meeting_id = Some("meeting-1".to_string());
         task.status = TaskStatus::Completed;
@@ -568,6 +610,61 @@ mod tests {
             .expect("get deleted")
             .is_none());
         assert!(repository.list_tasks().expect("list tasks").is_empty());
+    }
+
+    /// 验证旧版 meetings 表会被幂等补充原始媒体路径列。
+    #[test]
+    fn migrates_legacy_meetings_table_with_source_path() {
+        let connection = Connection::open_in_memory().expect("create legacy database");
+        connection
+            .execute_batch(
+                "CREATE TABLE meetings (
+                    id TEXT PRIMARY KEY,
+                    source_name TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    template_id TEXT NOT NULL,
+                    schema_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );",
+            )
+            .expect("create legacy meetings table");
+
+        let repository = MeetingRepository::from_connection(connection).expect("migrate database");
+        let columns = {
+            let connection = repository.lock().expect("lock database");
+            let mut statement = connection
+                .prepare("PRAGMA table_info(meetings)")
+                .expect("prepare column query");
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("query columns")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("collect columns")
+        };
+
+        assert!(columns.iter().any(|column| column == "source_path"));
+    }
+
+    /// 验证旧记录重新关联媒体后会持久化新路径供后续试听。
+    #[test]
+    fn updates_meeting_source_path_after_rebinding() {
+        let repository = MeetingRepository::in_memory().expect("create database");
+        let mut input = fixture();
+        input.source_path = None;
+        repository
+            .save_completed_meeting(&input)
+            .expect("save legacy meeting");
+
+        assert!(repository
+            .set_meeting_source_path("meeting-1", "D:\\Moved\\sample.mp3")
+            .expect("update source path"));
+        let detail = repository
+            .get_meeting("meeting-1")
+            .expect("get meeting")
+            .expect("meeting detail");
+
+        assert_eq!(detail.source_path.as_deref(), Some("D:\\Moved\\sample.mp3"));
     }
 
     /// 验证删除成功任务会在同一事务内清除会议、逐字稿、纪要及全部关联任务。

@@ -119,7 +119,7 @@ export function WorkspacePage() {
   /** 使用桌面服务按当前导入模式打开系统文件选择器。 */
   async function handleSelectFiles() {
     if (!canSelectMedia) {
-      setError("请先完成语音转写和会议纪要服务配置，再选择音频或视频");
+      setError("请先完成语音转写和 AI 总结服务配置，再选择音频或视频");
       return;
     }
     setIsSelecting(true);
@@ -138,7 +138,7 @@ export function WorkspacePage() {
   async function handleBrowserFiles(event: ChangeEvent<HTMLInputElement>) {
     if (!canSelectMedia) {
       event.target.value = "";
-      setError("请先完成语音转写和会议纪要服务配置，再选择音频或视频");
+      setError("请先完成语音转写和 AI 总结服务配置，再选择音频或视频");
       return;
     }
     const files = Array.from(event.target.files ?? []);
@@ -159,7 +159,7 @@ export function WorkspacePage() {
     event.preventDefault();
     setIsDragging(false);
     if (!canSelectMedia) {
-      setError("请先完成语音转写和会议纪要服务配置，再选择音频或视频");
+      setError("请先完成语音转写和 AI 总结服务配置，再选择音频或视频");
       return;
     }
     const files = Array.from(event.dataTransfer.files);
@@ -212,7 +212,7 @@ export function WorkspacePage() {
     const artifactIds = readyCandidates.flatMap((candidate) => candidate.artifactId ? [candidate.artifactId] : []);
     if (artifactIds.length === 0 || isSubmitting) return;
     if (!canProcess) {
-      setError("请先完成语音转写和会议纪要服务配置");
+      setError("请先完成语音转写和 AI 总结服务配置");
       return;
     }
     setIsSubmitting(true);
@@ -234,7 +234,7 @@ export function WorkspacePage() {
         <div>
           <span className="eyebrow">离线媒体</span>
           <h1 tabIndex={-1}>转写工作台</h1>
-          <p>选择一个或多个本地音频或视频文件，生成逐字稿和结构化会议纪要。</p>
+          <p>选择一个或多个本地音频或视频文件，生成逐字稿和结构化 AI 总结。</p>
         </div>
         <button className="button secondary" type="button" onClick={() => navigate("tasks")}>查看任务队列</button>
       </header>
@@ -262,7 +262,7 @@ export function WorkspacePage() {
         </section>
       ) : null}
 
-      {providerSetup.complete ? <div className="provider-ready-strip" role="status"><span aria-hidden="true" />本地转写与会议纪要服务均已就绪</div> : null}
+      {providerSetup.complete ? <div className="provider-ready-strip" role="status"><span aria-hidden="true" />本地转写与 AI 总结服务均已就绪</div> : null}
 
       <section className="import-mode-section" aria-labelledby="import-mode-title">
         <div className="import-mode-heading">
@@ -314,7 +314,7 @@ export function WorkspacePage() {
           <div className="dropzone-icon" aria-hidden="true"><UploadCloud size={28} strokeWidth={1.6} /></div>
           <h2 id="import-title">{!canSelectMedia ? "配置服务后选择媒体" : importMode === "batch" ? "批量添加离线媒体" : "选择一个离线媒体文件"}</h2>
           <p>{!canSelectMedia
-            ? "语音转写和会议纪要服务均配置完成后，此处会自动启用。"
+            ? "语音转写和 AI 总结服务均配置完成后，此处会自动启用。"
             : importMode === "batch"
             ? "可一次选择多个文件，也可分多次继续添加；源文件只读。"
             : candidates.length > 0
@@ -366,7 +366,7 @@ export function WorkspacePage() {
             </table>
           </div>
           <div className="review-footer">
-            <label className="field compact-field">会议纪要模板
+            <label className="field compact-field">内容整理模板
               <select value={selectedTemplate} onChange={(event) => setSelectedTemplate(event.target.value)}>
                 {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
               </select>

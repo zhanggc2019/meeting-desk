@@ -13,7 +13,7 @@ interface AppShellProps {
 const navigationItems: Array<{ page: Exclude<AppPage, "meeting-detail">; label: string; icon: typeof FileStack }> = [
   { page: "workspace", label: "转写工作台", icon: FileStack },
   { page: "tasks", label: "任务队列", icon: ListChecks },
-  { page: "meetings", label: "会议记录", icon: NotebookText },
+  { page: "meetings", label: "录音记录", icon: NotebookText },
 ];
 
 /** 提供稳定的企业桌面导航与主工作区布局。 */

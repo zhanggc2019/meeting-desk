@@ -1,5 +1,6 @@
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.1.0",
+  "contentType": "meeting",
   "title": "匿名客户沟通",
   "titleSource": "context",
   "meetingTime": {

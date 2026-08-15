@@ -1,6 +1,6 @@
 [package]
 name = "meeting-desk"
-version = "0.3.9"
+version = "0.3.10"
 description = "Windows offline media transcription and meeting minutes desktop tool"
 authors = ["Internal Tools Team"]
 edition = "2021"
@@ -34,3 +34,6 @@ tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1", features = ["serde", "v4"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

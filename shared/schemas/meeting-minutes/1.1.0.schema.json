@@ -1,0 +1,285 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:funasr-demo:meeting-minutes:1.1.0",
+  "title": "MeetingMinutes 1.1.0",
+  "description": "Provider-neutral, evidence-aware structured summary for imported recordings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contentType",
+    "title",
+    "titleSource",
+    "meetingTime",
+    "participants",
+    "summary",
+    "topics",
+    "conclusions",
+    "decisions",
+    "actionItems",
+    "risksAndIssues"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.1.0"
+    },
+    "contentType": {
+      "enum": [
+        "meeting",
+        "speech",
+        "lecture",
+        "course",
+        "interview",
+        "report",
+        "article_material",
+        "other"
+      ]
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "titleSource": {
+      "enum": ["context", "generated", "unknown"]
+    },
+    "meetingTime": {
+      "$ref": "#/$defs/meetingTime"
+    },
+    "participants": {
+      "type": "array",
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "pattern": "\\S"
+      }
+    },
+    "summary": {
+      "$ref": "#/$defs/nullableBodyText"
+    },
+    "topics": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/topic"
+      }
+    },
+    "conclusions": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/supportedStatement"
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/supportedStatement"
+      }
+    },
+    "actionItems": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/actionItem"
+      }
+    },
+    "risksAndIssues": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/riskOrIssue"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "title": {
+            "type": "null"
+          }
+        },
+        "required": ["title"]
+      },
+      "then": {
+        "properties": {
+          "titleSource": {
+            "const": "unknown"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "titleSource": {
+            "enum": ["context", "generated"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "bodyText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    },
+    "nullableBodyText": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000,
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableShortText": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableDateTime": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evidenceSegmentIds": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "pattern": "\\S"
+      }
+    },
+    "meetingTime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startAt", "endAt"],
+      "properties": {
+        "startAt": {
+          "$ref": "#/$defs/nullableDateTime"
+        },
+        "endAt": {
+          "$ref": "#/$defs/nullableDateTime"
+        }
+      }
+    },
+    "topic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "summary", "evidenceSegmentIds"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\S"
+        },
+        "summary": {
+          "$ref": "#/$defs/nullableBodyText"
+        },
+        "evidenceSegmentIds": {
+          "$ref": "#/$defs/evidenceSegmentIds"
+        }
+      }
+    },
+    "supportedStatement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content", "evidenceSegmentIds"],
+      "properties": {
+        "content": {
+          "$ref": "#/$defs/bodyText"
+        },
+        "evidenceSegmentIds": {
+          "$ref": "#/$defs/evidenceSegmentIds"
+        }
+      }
+    },
+    "actionItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "owner", "dueDateText", "dueDate", "evidenceSegmentIds"],
+      "properties": {
+        "description": {
+          "$ref": "#/$defs/bodyText"
+        },
+        "owner": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "dueDateText": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "dueDate": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidenceSegmentIds": {
+          "$ref": "#/$defs/evidenceSegmentIds"
+        }
+      }
+    },
+    "riskOrIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "description", "impact", "mitigation", "evidenceSegmentIds"],
+      "properties": {
+        "kind": {
+          "enum": ["risk", "issue"]
+        },
+        "description": {
+          "$ref": "#/$defs/bodyText"
+        },
+        "impact": {
+          "$ref": "#/$defs/nullableBodyText"
+        },
+        "mitigation": {
+          "$ref": "#/$defs/nullableBodyText"
+        },
+        "evidenceSegmentIds": {
+          "$ref": "#/$defs/evidenceSegmentIds"
+        }
+      }
+    }
+  }
+}

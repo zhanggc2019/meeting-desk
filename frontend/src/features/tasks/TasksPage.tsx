@@ -243,7 +243,7 @@ export function TasksPage() {
         open={deleteTaskId !== null}
         title={deleteTarget?.status === "completed" ? "清除已完成任务？" : "删除失败任务？"}
         description={deleteTarget?.status === "completed"
-          ? "清除后，关联会议记录、逐字稿、会议纪要和本地任务数据都会从本机永久删除；你导入的原始媒体文件不会受影响。"
+          ? "清除后，关联录音记录、逐字稿、AI 总结和本地任务数据都会从本机永久删除；你导入的原始媒体文件不会受影响。"
           : "只会删除任务记录和受管临时文件，不会删除你导入的原始文件。"}
         confirmLabel={deleteTarget?.status === "completed" ? "确认清除" : "删除任务"}
         busy={busyTaskId === deleteTaskId}
@@ -300,7 +300,7 @@ function TaskInspector({ task, nowMs, retrying, onRetry, onOpenMeeting, onOpenSe
 
       {task.meetingId ? (
         <button className="button primary inspector-action" type="button" onClick={() => onOpenMeeting(task.meetingId!)}>
-          查看会议纪要<ArrowRight size={16} aria-hidden="true" />
+          查看 AI 总结<ArrowRight size={16} aria-hidden="true" />
         </button>
       ) : null}
     </aside>

@@ -22,6 +22,7 @@ pub struct AppState {
 pub struct RegisteredArtifact {
     pub id: String,
     pub display_name: String,
+    pub source_path: PathBuf,
     pub mime_type: String,
     pub byte_length: u64,
     pub duration_ms: Option<u64>,

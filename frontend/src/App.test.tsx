@@ -263,7 +263,7 @@ describe("Windows 离线媒体工作台", () => {
     await waitFor(() => expect(screen.queryByText("客户访谈.mp3")).not.toBeInTheDocument());
   });
 
-  it("二次确认后清除成功任务及其关联会议资料", async () => {
+  it("二次确认后清除成功任务及其关联录音资料", async () => {
     const user = userEvent.setup();
     const client = createMockDesktopClient();
     const deleteTask = vi.spyOn(client, "deleteProcessingTask");
@@ -275,7 +275,7 @@ describe("Windows 离线媒体工作台", () => {
     await user.click(within(completedRow!).getByRole("button", { name: "清除" }));
 
     const dialog = screen.getByRole("alertdialog");
-    expect(within(dialog).getByText(/关联会议记录、逐字稿、会议纪要和本地任务数据都会从本机永久删除/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/关联录音记录、逐字稿、AI 总结和本地任务数据都会从本机永久删除/)).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "确认清除" }));
 
     await waitFor(() => expect(deleteTask).toHaveBeenCalledWith("task-complete-1"));
@@ -323,10 +323,10 @@ describe("Windows 离线媒体工作台", () => {
     expect(screen.getByLabelText("1 个任务需要关注")).toBeInTheDocument();
   });
 
-  it("打开结构化纪要和完整逐字稿并执行复制", async () => {
+  it("打开 AI 纪要和逐字稿并执行复制", async () => {
     const user = userEvent.setup();
     render(<App client={createMockDesktopClient()} />);
-    await user.click(screen.getByRole("button", { name: "会议记录" }));
+    await user.click(screen.getByRole("button", { name: "录音记录" }));
 
     expect(await screen.findByRole("columnheader", { name: "录音时长" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "总处理耗时" })).toBeInTheDocument();
@@ -334,12 +334,83 @@ describe("Windows 离线媒体工作台", () => {
     await user.click(await screen.findByRole("button", { name: /^产品交付节奏讨论/ }));
     expect(await screen.findByRole("heading", { name: "产品交付节奏讨论" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "会议摘要" })).toBeInTheDocument();
-    expect(screen.getByText(/处理耗时 22:00/)).toBeInTheDocument();
+    expect(screen.getByText(/处理 22:00/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "完整逐字稿" }));
+    await user.click(screen.getByRole("tab", { name: "逐字稿" }));
     expect(screen.getAllByText("说话人 A")).toHaveLength(2);
     await user.click(screen.getByRole("button", { name: "复制全文" }));
     expect(await screen.findByText("已复制完整逐字稿")).toBeInTheDocument();
+  });
+
+  it("从录音列表和详情页使用系统播放器试听原始媒体", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const playMeetingMedia = vi.spyOn(client, "playMeetingMedia")
+      .mockResolvedValue({ status: "opened", reboundSource: true });
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "录音记录" }));
+
+    await user.click(await screen.findByRole("button", { name: "试听 产品交付节奏讨论" }));
+    await waitFor(() => expect(playMeetingMedia).toHaveBeenCalledWith("meeting-demo-1"));
+    expect(await screen.findByText("已关联原文件，并使用系统播放器打开")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^产品交付节奏讨论/ }));
+    await user.click(await screen.findByRole("button", { name: "试听" }));
+    await waitFor(() => expect(playMeetingMedia).toHaveBeenCalledTimes(2));
+  });
+
+  it("按演讲内容类型展示演讲结构且不渲染会议决策和待办", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const originalGetMeetingDetail = client.getMeetingDetail;
+    client.getMeetingDetail = async (id) => {
+      const detail = await originalGetMeetingDetail(id);
+      return {
+        ...detail,
+        templateName: "演讲总结",
+        minutes: {
+          ...detail.minutes,
+          contentType: "speech",
+          title: "如何建立长期学习系统",
+          summary: "讲者围绕目标、反馈和复盘介绍了长期学习方法。",
+          conclusions: [{ content: "稳定反馈比短期强度更重要。", evidenceSegmentIds: ["segment-2"] }],
+          decisions: [],
+          actionItems: [],
+          risksAndIssues: [],
+        },
+      };
+    };
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "录音记录" }));
+    await user.click(await screen.findByRole("button", { name: /^产品交付节奏讨论/ }));
+
+    expect(await screen.findByRole("heading", { name: "如何建立长期学习系统" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "内容概览" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "演讲脉络" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "核心观点" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "会议摘要" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "决策事项" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "待办事项" })).not.toBeInTheDocument();
+  });
+
+  it("支持逐字稿搜索、清空搜索和章节定位", async () => {
+    const user = userEvent.setup();
+    render(<App client={createMockDesktopClient()} />);
+    await user.click(screen.getByRole("button", { name: "录音记录" }));
+    await user.click(await screen.findByRole("button", { name: /^产品交付节奏讨论/ }));
+
+    await user.click(screen.getByRole("tab", { name: "逐字稿" }));
+    await user.type(screen.getByRole("searchbox", { name: "查找逐字稿" }), "验收清单");
+    expect(screen.getByText("1 个匹配")).toBeInTheDocument();
+    expect(screen.getByText("测试团队整理验收清单。")).toBeInTheDocument();
+    expect(screen.queryByText("我们先聚焦核心闭环。")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "清除查找" }));
+    expect(screen.getByText("我们先聚焦核心闭环。")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "章节" }));
+    await user.click(screen.getByRole("button", { name: "00:15" }));
+    expect(screen.getByRole("tab", { name: "逐字稿" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("本地测试流程完成后，再接入真实服务。").closest("article")).toHaveClass("highlighted");
   });
 
   it("为没有结构化分段的历史逐字稿生成可读段落", async () => {
@@ -358,54 +429,54 @@ describe("Windows 离线媒体工作台", () => {
       };
     };
     render(<App client={client} />);
-    await user.click(screen.getByRole("button", { name: "会议记录" }));
+    await user.click(screen.getByRole("button", { name: "录音记录" }));
     await user.click(await screen.findByRole("button", { name: /^产品交付节奏讨论/ }));
-    await user.click(screen.getByRole("tab", { name: "完整逐字稿" }));
+    await user.click(screen.getByRole("tab", { name: "逐字稿" }));
 
     const transcript = screen.getByRole("tabpanel");
     expect(transcript.querySelectorAll(".transcript-plain p").length).toBeGreaterThan(1);
     expect(within(transcript).getByText(/第二段单独保留。$/)).toBeInTheDocument();
   });
 
-  it("确认后删除会议和关联记录并返回列表", async () => {
+  it("确认后删除录音和关联记录并返回列表", async () => {
     const user = userEvent.setup();
     const client = createMockDesktopClient();
     const deleteMeeting = vi.spyOn(client, "deleteMeeting");
     render(<App client={client} />);
-    await user.click(screen.getByRole("button", { name: "会议记录" }));
+    await user.click(screen.getByRole("button", { name: "录音记录" }));
     await user.click(await screen.findByRole("button", { name: /^产品交付节奏讨论/ }));
 
-    await user.click(await screen.findByRole("button", { name: "删除会议" }));
+    await user.click(await screen.findByRole("button", { name: "删除录音记录" }));
     const dialog = screen.getByRole("alertdialog");
     expect(within(dialog).getByText(/原始文件不会受影响/)).toBeInTheDocument();
-    await user.click(within(dialog).getByRole("button", { name: "删除会议" }));
+    await user.click(within(dialog).getByRole("button", { name: "删除记录" }));
 
     await waitFor(() => expect(deleteMeeting).toHaveBeenCalledWith("meeting-demo-1"));
-    expect(await screen.findByRole("heading", { name: "会议记录" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "录音记录" })).toBeInTheDocument();
     expect(screen.queryByText("产品交付节奏讨论")).not.toBeInTheDocument();
   });
 
-  it("在会议列表二次确认删除并刷新分页结果", async () => {
+  it("在录音列表二次确认删除并刷新分页结果", async () => {
     const user = userEvent.setup();
     const client = createMockDesktopClient();
     const deleteMeeting = vi.spyOn(client, "deleteMeeting");
     const listMeetingPage = vi.spyOn(client, "listMeetingsPage");
     render(<App client={client} />);
-    await user.click(screen.getByRole("button", { name: "会议记录" }));
+    await user.click(screen.getByRole("button", { name: "录音记录" }));
 
     const meetingRow = (await screen.findByText("产品交付节奏讨论")).closest("tr");
     expect(meetingRow).not.toBeNull();
     await user.click(within(meetingRow!).getByRole("button", { name: "删除 产品交付节奏讨论" }));
     const dialog = screen.getByRole("alertdialog");
-    expect(within(dialog).getByText(/会议记录、逐字稿、会议纪要和关联任务/)).toBeInTheDocument();
-    await user.click(within(dialog).getByRole("button", { name: "删除会议" }));
+    expect(within(dialog).getByText(/录音记录、逐字稿、AI 总结和关联任务/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "删除记录" }));
 
     await waitFor(() => expect(deleteMeeting).toHaveBeenCalledWith("meeting-demo-1"));
     expect(listMeetingPage.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(await screen.findByRole("heading", { name: "还没有会议记录" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "还没有录音记录" })).toBeInTheDocument();
   });
 
-  it("会议记录分页查询并在搜索变化后回到第一页", async () => {
+  it("录音记录分页查询并在搜索变化后回到第一页", async () => {
     const user = userEvent.setup();
     const client = createMockDesktopClient();
     const firstPage = await client.listMeetings("");
@@ -426,14 +497,14 @@ describe("Windows 离线媒体工作台", () => {
       };
     });
     render(<App client={client} />);
-    await user.click(screen.getByRole("button", { name: "会议记录" }));
+    await user.click(screen.getByRole("button", { name: "录音记录" }));
 
     expect(await screen.findByText("第 1 / 2 页，共 12 条")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "下一页" }));
     expect(await screen.findByText("会议记录-11")).toBeInTheDocument();
     expect(listMeetingPage).toHaveBeenLastCalledWith({ query: "", page: 2, pageSize: 10 });
 
-    await user.type(screen.getByLabelText("搜索会议记录"), "01");
+    await user.type(screen.getByLabelText("搜索录音记录"), "01");
     await waitFor(() => expect(listMeetingPage).toHaveBeenLastCalledWith({ query: "01", page: 1, pageSize: 10 }));
     expect(await screen.findByText("第 1 / 1 页，共 1 条")).toBeInTheDocument();
   });
@@ -656,15 +727,16 @@ describe("Windows 离线媒体工作台", () => {
     })));
   });
 
-  it("在会议详情渲染安全的 Markdown 文档预览", async () => {
+  it("在录音详情渲染安全的 Markdown 文档预览", async () => {
     const user = userEvent.setup();
     render(<StrictMode><App client={createMockDesktopClient()} /></StrictMode>);
-    await user.click(screen.getByRole("button", { name: "会议记录" }));
+    await user.click(screen.getByRole("button", { name: "录音记录" }));
     await user.click(await screen.findByRole("button", { name: /^产品交付节奏讨论/ }));
 
-    await user.click(await screen.findByRole("tab", { name: "Markdown 预览" }));
-    const panel = await screen.findByRole("tabpanel", { name: "Markdown 文档预览" });
-    expect(within(panel).getByRole("heading", { name: "导出文档效果" })).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "文档预览" }));
+    const panel = await screen.findByRole("dialog", { name: "Markdown 文档预览" });
+    expect(panel.parentElement).toBe(document.body);
+    expect(within(panel).getByRole("heading", { name: "Markdown 文档" })).toBeInTheDocument();
     expect(await within(panel).findByRole("heading", { name: "产品交付节奏讨论" })).toBeInTheDocument();
     expect(within(panel).getByRole("table")).toBeInTheDocument();
     expect(within(panel).queryByText("正在生成预览…")).not.toBeInTheDocument();

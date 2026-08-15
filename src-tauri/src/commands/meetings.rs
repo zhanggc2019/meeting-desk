@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -53,6 +53,7 @@ pub struct MeetingPageResponse {
 #[serde(rename_all = "camelCase")]
 pub struct MeetingDetailResponse {
     pub id: String,
+    pub source_name: String,
     pub template_name: String,
     pub duration_ms: Option<u64>,
     pub processing_duration_ms: Option<u64>,
@@ -76,6 +77,14 @@ pub struct MinutesTemplateResponse {
 pub struct ExportResult {
     pub status: &'static str,
     pub display_name: Option<String>,
+}
+
+/// 表示一次本地媒体试听请求的结果。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackResult {
+    pub status: &'static str,
+    pub rebound_source: bool,
 }
 
 /// 在本地历史中搜索标题、摘要和完整逐字稿。
@@ -263,6 +272,7 @@ pub fn get_meeting_detail(
     let transcript = normalize_transcript(&detail.transcript, detail.transcript_segments);
     let response = MeetingDetailResponse {
         id: detail.id,
+        source_name: detail.source_name,
         template_name: template_name(&detail.template_id).to_string(),
         duration_ms: transcript["durationMs"].as_u64(),
         processing_duration_ms,
@@ -278,6 +288,134 @@ pub fn get_meeting_detail(
         operation_started.elapsed().as_millis(),
     );
     Ok(response)
+}
+
+/// 使用 Windows 默认播放器试听原始媒体；旧记录缺少路径时引导用户重新关联。
+#[tauri::command]
+pub fn play_meeting_media(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    meeting_id: String,
+) -> Result<PlaybackResult, CommandError> {
+    let detail = state
+        .repository
+        .get_meeting(&meeting_id)?
+        .ok_or_else(|| CommandError::new("meeting_not_found", "未找到该录音记录", false))?;
+    let saved_path = detail
+        .source_path
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|path| path.is_file());
+    let (media_path, rebound_source) = if let Some(path) = saved_path {
+        (path, false)
+    } else {
+        let selected = app
+            .dialog()
+            .file()
+            .set_title("选择此记录对应的原始媒体文件")
+            .add_filter("音频和视频文件", &["wav", "mp3", "m4a", "mp4", "mov"])
+            .blocking_pick_file()
+            .and_then(|value| value.into_path().ok());
+        let Some(path) = selected else {
+            log::info!(
+                target: "app.meetings",
+                "meeting_playback_cancelled meeting_id={}",
+                meeting_id,
+            );
+            return Ok(PlaybackResult {
+                status: "cancelled",
+                rebound_source: false,
+            });
+        };
+        validate_playback_media(&path)?;
+        state
+            .repository
+            .set_meeting_source_path(&meeting_id, &path.to_string_lossy())?;
+        (path, true)
+    };
+    open_with_system_player(&media_path)?;
+    log::info!(
+        target: "app.meetings",
+        "meeting_playback_opened meeting_id={} rebound_source={}",
+        meeting_id,
+        rebound_source,
+    );
+    Ok(PlaybackResult {
+        status: "opened",
+        rebound_source,
+    })
+}
+
+/// 校验重新关联的媒体文件存在且扩展名属于应用支持范围。
+fn validate_playback_media(path: &Path) -> Result<(), CommandError> {
+    if !path.is_file() {
+        return Err(CommandError::new(
+            "playback_file_missing",
+            "原始媒体文件不存在，请重新选择",
+            false,
+        ));
+    }
+    let supported = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "wav" | "mp3" | "m4a" | "mp4" | "mov"
+            )
+        });
+    if !supported {
+        return Err(CommandError::new(
+            "playback_format_unsupported",
+            "请选择 WAV、MP3、M4A、MP4 或 MOV 文件",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+/// 通过 Windows Shell 直接调用默认关联播放器，不创建终端窗口。
+#[cfg(target_os = "windows")]
+fn open_with_system_player(path: &Path) -> Result<(), CommandError> {
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let operation = "open".encode_utf16().chain(once(0)).collect::<Vec<_>>();
+    let media_path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            media_path.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result as isize <= 32 {
+        return Err(CommandError::new(
+            "playback_open_failed",
+            "无法打开系统播放器，请检查该格式的默认应用",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+/// 为非 Windows 开发环境提供明确错误；正式目标仅支持 Windows 11。
+#[cfg(not(target_os = "windows"))]
+fn open_with_system_player(_path: &Path) -> Result<(), CommandError> {
+    Err(CommandError::new(
+        "playback_platform_unsupported",
+        "当前系统不支持本地媒体试听",
+        false,
+    ))
 }
 
 /// 从恢复任务所需的现有生命周期快照即时计算指定会议的总处理耗时。
@@ -479,7 +617,7 @@ fn render_export_markdown(minutes: &MeetingMinutes, transcript: &str) -> String 
 /// 生成不含 Windows 非法字符的导出文件名主体。
 fn safe_file_stem(title: Option<&str>) -> String {
     let sanitized = title
-        .unwrap_or("会议纪要")
+        .unwrap_or("录音整理")
         .chars()
         .map(|character| {
             if matches!(
@@ -494,7 +632,7 @@ fn safe_file_stem(title: Option<&str>) -> String {
         .collect::<String>();
     let trimmed = sanitized.trim().trim_end_matches(['.', ' ']);
     if trimmed.is_empty() {
-        "会议纪要".to_string()
+        "录音整理".to_string()
     } else {
         trimmed.chars().take(80).collect()
     }
@@ -520,14 +658,15 @@ fn ensure_markdown_extension(path: &Path) -> Result<(), CommandError> {
 #[cfg(test)]
 mod tests {
     use crate::domain::TaskAction;
-    use crate::minutes::{MeetingTime, TitleSource};
+    use crate::minutes::{ContentType, MeetingTime, TitleSource, MEETING_MINUTES_SCHEMA_VERSION};
 
     use super::*;
 
     /// 构造最小有效纪要用于导出测试。
     fn fixture_minutes() -> MeetingMinutes {
         MeetingMinutes {
-            schema_version: "1.0.0".to_string(),
+            schema_version: MEETING_MINUTES_SCHEMA_VERSION.to_string(),
+            content_type: ContentType::Meeting,
             title: Some("项目/周会".to_string()),
             title_source: TitleSource::Generated,
             meeting_time: MeetingTime {
@@ -557,6 +696,31 @@ mod tests {
     #[test]
     fn sanitizes_export_file_name() {
         assert_eq!(safe_file_stem(Some("项目/周会")), "项目_周会");
+        assert_eq!(safe_file_stem(None), "录音整理");
+    }
+
+    /// 验证试听重新关联仅接受存在且受支持的本地媒体文件。
+    #[test]
+    fn validates_rebound_playback_media() {
+        let directory = tempfile::TempDir::new().expect("create playback directory");
+        let supported = directory.path().join("sample.mp3");
+        let unsupported = directory.path().join("sample.txt");
+        std::fs::write(&supported, b"test audio placeholder").expect("write supported fixture");
+        std::fs::write(&unsupported, b"not media").expect("write unsupported fixture");
+
+        assert!(validate_playback_media(&supported).is_ok());
+        assert_eq!(
+            validate_playback_media(&unsupported)
+                .expect_err("reject unsupported media")
+                .code,
+            "playback_format_unsupported"
+        );
+        assert_eq!(
+            validate_playback_media(&directory.path().join("missing.wav"))
+                .expect_err("reject missing media")
+                .code,
+            "playback_file_missing"
+        );
     }
 
     /// 验证历史耗时只从匹配会议的已完成任务即时派生，不写入会议记录。

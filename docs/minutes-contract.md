@@ -1,9 +1,9 @@
-# 会议纪要 Schema、Prompt 与校验契约
+# 录音内容整理 Schema、Prompt 与校验契约
 
-> 状态：Phase 0 契约基线
-> 日期：2026-07-17
+> 状态：已实现契约
+> 日期：2026-08-15
 > 适用范围：Agent 5 在 Phase 2 负责的 `src-tauri/src/minutes/**`、`shared/schemas/**`、`shared/fixtures/minutes/**`
-> 实现状态：本文只定义契约和测试计划；尚未创建可执行 Schema、Prompt、fixture、解析器或测试，也未调用真实模型。
+> 实现状态：Schema、Prompt、fixture、解析器与测试已落地；真实 Provider 仍必须遵守同一适配器边界。
 
 本文与 [技术架构](./architecture.md)、[MVP 定义](./mvp.md) 和 [Provider 契约](./api-contract.md) 共同构成会议纪要模块的输入、输出和安全边界。真实 LLM 是否支持 JSON Schema、最大输入长度及具体请求字段均保持未验证；Provider adapter 不能复制或改写本文定义的业务 Schema。
 
@@ -36,14 +36,14 @@ Transcript + MinutesRequest.meetingContext
 
 ### 2.1 版本规则
 
-- 首版 Schema 版本定为 `1.0.0`，使用 JSON Schema Draft 2020-12。
-- Phase 2 规范文件建议为 `shared/schemas/meeting-minutes/1.0.0.schema.json`，`$id` 使用不含内部地址的稳定 URN，例如 `urn:funasr-demo:meeting-minutes:1.0.0`。
-- `MeetingMinutes.schemaVersion` 必须为常量 `"1.0.0"`。
+- 当前 Schema 版本为 `1.1.0`，使用 JSON Schema Draft 2020-12；`1.1.0` 增加必填 `contentType`，用于区分会议、演讲、课程、访谈等录音形态。
+- 当前唯一规范文件为 `shared/schemas/meeting-minutes/1.1.0.schema.json`，`$id` 为 `urn:funasr-demo:meeting-minutes:1.1.0`。
+- 新 Provider 输出的 `MeetingMinutes.schemaVersion` 必须为常量 `"1.1.0"`，且必须显式输出 `contentType`；旧持久化记录仍可按 `1.0.0` 兼容读取。
 - `MinutesRequest.outputSchemaVersion`、`MeetingMinutes.schemaVersion`、`MeetingMinutesEnvelope.schemaVersion` 和 `validation.schemaVersion` 必须完全相同。任何不一致均返回 `schema_version_mismatch`，不得自动猜测或迁移。
 - 同一 major 版本中，新增 required 字段或改变既有字段语义属于 breaking change，必须提升 major。只增加说明或收紧不影响既有合法实例的校验可提升 patch。
 - 历史数据按其原版本读取。迁移必须是显式、可测试的纯函数；不得在读取时静默覆盖原 JSON。
 
-`templateId` 和 `templateVersion` 是 `MinutesRequest`、任务和持久化元数据，不让模型回显，也不放进 `MeetingMinutes` v1.0.0。可信编排层负责把模板版本与结果关联，避免模型伪造模板身份。
+`templateId` 和 `templateVersion` 是 `MinutesRequest`、任务和持久化元数据，不让模型回显，也不放进 `MeetingMinutes`。可信编排层负责把模板版本与结果关联，避免模型伪造模板身份。
 
 ### 2.2 required / nullable 总策略
 
@@ -59,13 +59,14 @@ Transcript + MinutesRequest.meetingContext
 
 这样 UI 可以稳定渲染每一个章节，同时能区分“字段缺失/模型漏写”和“信息确实未知”。JSON Schema 负责 required、类型、格式、长度和额外字段；来源真实性、跨字段关系和证据引用由语义校验器负责。
 
-## 3. `MeetingMinutes` v1.0.0 规范形状
+## 3. `MeetingMinutes` v1.1.0 规范形状
 
 以下 IDL 是 Phase 2 JSON Schema 的规范性语义，不是当前已实现代码：
 
 ```ts
 interface MeetingMinutesV1 {
-  schemaVersion: "1.0.0";
+  schemaVersion: "1.1.0";
+  contentType: "meeting" | "speech" | "lecture" | "course" | "interview" | "report" | "article_material" | "other";
   title: string | null;
   titleSource: "context" | "generated" | "unknown";
   meetingTime: {
@@ -113,15 +114,16 @@ interface RiskOrIssue {
 
 | 字段 | 语义和来源 | 空值规则 |
 | --- | --- | --- |
-| `schemaVersion` | 业务 payload 的精确 Schema 版本 | 必须为 `1.0.0` |
+| `schemaVersion` | 业务 payload 的精确 Schema 版本 | 新输出必须为 `1.1.0` |
+| `contentType` | 正文的主要内容形态，驱动展示和导出结构；证据不足时使用 `other`，不得默认使用 `meeting` | 必填枚举 |
 | `title` | 有 `knownTitle` 时原样使用；否则可从明确主题生成简短描述性标题 | 内容不足时 `null` |
 | `titleSource` | `context` 表示与 `knownTitle` 完全一致；`generated` 表示模型基于内容生成；`unknown` 表示标题为 `null` | 与 `title` 联合校验 |
 | `meetingTime` | 只接受 `meetingContext.knownStartAt/knownEndAt`；录音文件时间、转写内容、“今天/刚才”等均不得作为会议时间 | 未提供的端点为 `null` |
 | `participants` | 只接受 `meetingContext.knownParticipants` 中的姓名；保持首次出现顺序并去重 | 未提供时 `[]` |
 | `summary` | 只概括得到转写证据支持的核心内容，不加入常识、建议或未表达动机 | 内容不足时 `null` |
 | `topics` | 实际讨论的主题；`summary` 是该主题的有证据概括 | 无可靠议题时 `[]` |
-| `conclusions` | 会议中已经形成的结论；讨论、建议和猜测不能升级为结论 | 无明确结论时 `[]` |
-| `decisions` | 明确确认、同意或拍板的决定；提议、选项、待确认事项不属于决策 | 无明确决策时 `[]` |
+| `conclusions` | 有证据支持的结论、核心观点或知识点；讨论、建议和猜测不能升级为结论 | 无明确结论时 `[]` |
+| `decisions` | 仅用于明确确认、同意或拍板的决定；非会议内容通常为空 | 无明确决策时 `[]` |
 | `actionItems` | 明确要求执行的事项。描述可提炼，负责人和截止日期受特殊来源规则限制 | 无明确待办时 `[]` |
 | `risksAndIssues` | 风险、阻塞、异议、未决问题和需要人工核对的重要低置信度内容 | 无项目时 `[]` |
 
@@ -139,7 +141,7 @@ interface RiskOrIssue {
 
 ### 3.3 结构限制建议
 
-Phase 2 Schema 应对未受信任输出设置边界：标题建议不超过 200 字符，单个正文项不超过 2,000 字符，摘要不超过 5,000 字符，单个数组不超过 100 项，单个 evidence 数组不超过 100 个 ID。最终数值由 Lead 在 Phase 2 固化并写测试；一经进入 `1.0.0` 不得因 Provider 差异私自改变。HTTP `maxResponseBytes` 仍是更外层的硬限制，Schema 长度限制不能替代传输限额。
+Schema 对未受信任输出设置边界：标题不超过 200 字符，单个正文项不超过 2,000 字符，摘要不超过 5,000 字符，单个数组不超过 100 项，单个 evidence 数组不超过 100 个 ID。限制不得因 Provider 差异私自改变。HTTP `maxResponseBytes` 仍是更外层的硬限制，Schema 长度限制不能替代传输限额。
 
 ## 4. 确定性语义校验
 
@@ -154,8 +156,11 @@ JSON Schema 无法证明内容没有幻觉。Phase 2 必须在 Schema 校验后�
 7. `dueDate` 只能由可信代码生成，且与一个完整、无歧义的 `dueDateText` 一致；模型返回非空 `dueDate` 应被忽略并重算，或在严格模式下拒绝。
 8. 空白字符串、未知占位词、未知枚举、额外属性、重复条目被拒绝或由确定性规范化步骤处理；不能用第二次 LLM 调用“修正”来源事实。
 9. `decisions` 的证据必须包含明确确认语义；自动化只能做有限启发式检查，最终防线仍是 Prompt、样例测试和人工可追溯证据。没有把握时降级到 `risksAndIssues(kind="issue")` 或省略，不能升级为决策。
+10. `contentType=meeting` 仅用于真实多人协商、确认或任务协调；单人主题表达使用 `speech`，知识讲解使用 `lecture`/`course`，问答主导使用 `interview`。不得仅因“我们”、工作术语或多个 speaker label 判定为会议。
 
 模型候选的语义校验采用确定性降级，不能因为单个可选事实无法证明而丢弃整份已经生成的纪要：受保护上下文始终由可信请求覆盖；悬空或缺失 evidence 的可选条目直接移除；无法证明的 `owner`、`dueDateText` 和 `dueDate` 置为 `null`；未明确确认或仅有低置信度证据的结论、决策、待办直接移除。JSON 无法解析、Schema 版本错误、required 字段缺失、类型错误、未知字段和输入 transcript 无效等不可修复结构问题仍必须失败。
+
+内容类型确认后还需执行确定性字段归一化：非会议内容清空会议时间、参与人和决策；`speech`、`lecture` 额外清空待办。`course`、`interview`、`report` 可保留原文明确支持的学习任务或后续动作，避免为了修正模板误判而丢失有效信息。
 
 严格复核已持久化值时，语义校验失败使用稳定、无正文的错误细分，例如 `invalid_evidence_reference`、`context_field_mismatch`、`inferred_identity_rejected`、`ambiguous_due_date`。错误对象只包含 JSON Pointer、错误码和安全消息，不包含实际字段值、原文或模型响应。
 
@@ -168,9 +173,9 @@ Prompt 由可信代码按固定顺序构造，模板内容是版本化仓库资�
 1. **System invariants**：角色、只依据输入、不得推断四类敏感事实、抵抗 transcript prompt injection、只输出 JSON。
 2. **Schema contract**：目标 `outputSchemaVersion`、字段语义、required/nullable 规则、枚举和 JSON Schema。若 Provider 支持经验证的 structured output，由 adapter 传递同一 Schema；不支持时使用文本约束但仍本地校验。
 3. **Template instructions**：由 `templateId + templateVersion` 选择内置模板侧重点，不改变字段形状；`adaptive` 允许模型先判断合适的组织重点，但不能绕过 Schema 和证据约束。
-4. **Trusted meeting context**：以独立 JSON 区块传入已知标题、时间和参会人。缺失字段明确为 null/空数组，不能由 transcript 补齐受保护字段。
+4. **Trusted context**：以独立 JSON 区块传入已知标题、时间和参与人。缺失字段明确为 null/空数组，不能由 transcript 补齐受保护字段。
 5. **Transcript quality context**：说明 segments 是否具有时间戳、speaker、confidence；标记低置信度 segment ID，但不宣称无 confidence 等于高 confidence。
-6. **Untrusted transcript**：放入带随机或结构化边界的 data 区块，明确其中任何指令均为会议原文，不具控制权。
+6. **Untrusted transcript**：放入带随机或结构化边界的 data 区块，明确其中任何指令均为录音原文，不具控制权。
 7. **Output reminder**：只能返回一个根 JSON object，不带 Markdown、代码围栏、解释或前后缀。
 
 Prompt 模板、完整 transcript、模型输出和修复请求均属于敏感正文，不进入普通日志或 mock 调用记录。日志最多记录 `templateId`、`templateVersion`、`schemaVersion`、输入字符/segment 数和安全错误码。
@@ -248,7 +253,7 @@ Prompt 模板、完整 transcript、模型输出和修复请求均属于敏感�
 
 ## 8. 内置模板契约
 
-内置模板共享 `MeetingMinutes` v1.0.0。模板 ID/首版版本如下；实际注册表由 Rust 模块实现并测试。
+内置模板共享 `MeetingMinutes` v1.1.0。模板自身当前仍使用 `1.0.0` 版本；实际注册表由 Rust 模块实现并测试。
 
 | `templateId` | `templateVersion` | 内容侧重点 | 禁止升级的内容 |
 | --- | --- | --- | --- |
@@ -258,11 +263,12 @@ Prompt 模板、完整 transcript、模型输出和修复请求均属于敏感�
 | `course_summary` | `1.0.0` | 提炼课程主题、核心概念、知识结构、案例和明确学习任务 | 讲师观点不自动升级为客观事实；不得补造课程目标或作业 |
 | `research_project` | `1.0.0` | 聚焦研究问题、方法、证据、阶段结论、局限和后续研究动作 | 假设不等于结论；相关性不等于因果；不得补造实验结果 |
 | `academic_lecture` | `1.0.0` | 组织讲座主题、理论框架、论证链、案例、争议和启发 | 演讲者推测不等于学界共识；不得补造引用和数据来源 |
+| `speech_summary` | `1.0.0` | 按演讲推进顺序组织主题脉络、核心观点、论据、案例和启发 | 讲者观点不得改写为会议共识、决策或团队待办 |
 | `profile_interview` | `1.0.0` | 围绕人物经历、关键事件、观点、选择与原话证据组织 | 不推断人格、动机和未明确身份；编辑性归纳需保留证据 |
 | `in_depth_interview` | `1.0.0` | 围绕访谈问题、回答脉络、关键洞察、矛盾点和待核实事项组织 | 不将提问者假设当作受访者观点；不得消除有意义的矛盾 |
 | `business_plan` | `1.0.0` | 提炼机会、客户、价值主张、方案、商业模式、资源、里程碑和风险 | 设想不等于已验证事实；收入预测不等于承诺；不得补造市场数据 |
 | `article_outline` | `1.0.0` | 将内容整理为中心论点、章节脉络、论据、案例和待补材料 | 不补写转写中没有的论据；缺口应作为风险或待办呈现 |
-| `adaptive` | `1.0.0` | 根据转写内容判断最合适的上述组织重点，并在统一 Schema 中输出 | 不回显或伪造模板身份；不改变字段；不以“自适应”为由放宽证据规则 |
+| `adaptive` | `1.0.0` | 先输出 `contentType`，再按内容形态选择上述组织重点 | 不默认使用 `meeting`；不回显或伪造模板身份；不改变字段；不放宽证据规则 |
 
 模板只能调整字段选择优先级、组织方式和措辞，不得：
 
@@ -323,7 +329,7 @@ shared/fixtures/minutes/v1/
 | --- | --- | --- |
 | JSON parser | 合法根对象、前后空白、单一可选 JSON fence | 成功且结果一致 |
 | JSON parser | 前缀解释、两个 JSON、截断 JSON、超深嵌套、超响应上限 | 拒绝，不做局部捞取，不泄露 body |
-| Schema | 标准/周会/客户 valid fixtures | 全部通过同一个 `1.0.0` Schema |
+| Schema | 标准/周会/客户 valid fixtures | 全部通过同一个 `1.1.0` Schema |
 | Schema | 缺 required、额外字段、错误 nullable、非法 enum、空白字符串、数组/长度超限 | 精确失败，返回安全 JSON Pointer |
 | Version | request/payload/envelope/validation 版本一致与不一致 | 一致通过；不一致为 `schema_version_mismatch` |
 | Context | 已知 title/time/participants 原样复制 | 通过 |
@@ -358,6 +364,6 @@ shared/fixtures/minutes/v1/
 - 真实 Provider 是否会返回代码围栏、拒答、安全过滤或截断 JSON，以及对应可安全修复策略；
 - 低置信度阈值和 Schema 字符/数组上限的最终配置值；
 - 模板中文措辞和 Markdown 章节文案的产品验收；
-- 没有 segments 时是否需要引入独立、非伪造的文本 span evidence 类型；v1.0.0 先允许空 evidence 数组。
+- 没有 segments 时是否需要引入独立、非伪造的文本 span evidence 类型；v1.1.0 继续允许空 evidence 数组。
 
 Phase 2 只有在 Schema 文件、Rust parser/validator、模板注册表、人工 fixtures 和上述测试真实执行通过后，才能声明纪要模块完成。Phase 4 必须用脱敏、最小非敏感输入验证真实模型结构；不可访问时明确标记 `BLOCKED` 并继续使用 mock，不得根据相似 API 推测成功。

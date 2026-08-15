@@ -1,13 +1,15 @@
 use serde::{Deserialize, Serialize};
 
 /// MeetingMinutes 当前唯一受支持的 Schema 版本。
-pub const MEETING_MINUTES_SCHEMA_VERSION: &str = "1.0.0";
+pub const MEETING_MINUTES_SCHEMA_VERSION: &str = "1.1.0";
 
 /// 表示已经通过结构与语义校验的会议纪要。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MeetingMinutes {
     pub schema_version: String,
+    #[serde(default)]
+    pub content_type: ContentType,
     pub title: Option<String>,
     pub title_source: TitleSource,
     pub meeting_time: MeetingTime,
@@ -18,6 +20,21 @@ pub struct MeetingMinutes {
     pub decisions: Vec<SupportedStatement>,
     pub action_items: Vec<ActionItem>,
     pub risks_and_issues: Vec<RiskOrIssue>,
+}
+
+/// 标识录音正文的主要内容形态，驱动模板约束、展示文案和导出结构。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentType {
+    Meeting,
+    Speech,
+    Lecture,
+    Course,
+    Interview,
+    Report,
+    ArticleMaterial,
+    #[default]
+    Other,
 }
 
 /// 标识会议标题来自可信上下文、模型概括或保持未知。

@@ -1,5 +1,6 @@
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.1.0",
+  "contentType": "meeting",
   "title": "匿名讨论",
   "titleSource": "generated",
   "meetingTime": { "startAt": null, "endAt": null },

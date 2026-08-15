@@ -5,8 +5,8 @@ use chrono::{DateTime, NaiveDate};
 use crate::providers::{Transcript, TranscriptSegment};
 
 use super::{
-    ActionItem, MeetingContext, MeetingMinutes, MinutesError, RiskOrIssue, SupportedStatement,
-    TitleSource, Topic, ValidationOptions, MEETING_MINUTES_SCHEMA_VERSION,
+    ActionItem, ContentType, MeetingContext, MeetingMinutes, MinutesError, RiskOrIssue,
+    SupportedStatement, TitleSource, Topic, ValidationOptions, MEETING_MINUTES_SCHEMA_VERSION,
 };
 
 const MAX_TITLE_CHARS: usize = 200;
@@ -20,6 +20,25 @@ const MAX_EVIDENCE_ITEMS: usize = 100;
 enum ValidationMode {
     ModelCandidate,
     VerifiedValue,
+}
+
+/// 按已确认内容类型移除不适用字段，防止模型把非会议内容再次包装成会议。
+pub fn normalize_content_type_fields(minutes: &mut MeetingMinutes) {
+    if minutes.content_type == ContentType::Meeting {
+        return;
+    }
+
+    minutes.meeting_time.start_at = None;
+    minutes.meeting_time.end_at = None;
+    minutes.participants.clear();
+    minutes.decisions.clear();
+
+    if matches!(
+        minutes.content_type,
+        ContentType::Speech | ContentType::Lecture
+    ) {
+        minutes.action_items.clear();
+    }
 }
 
 /// 校验 Provider-neutral transcript 的空文本、segment、时间戳和 confidence 不变量。

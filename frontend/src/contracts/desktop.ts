@@ -156,7 +156,8 @@ export interface RiskOrIssue {
 }
 
 export interface MeetingMinutes {
-  schemaVersion: "1.0.0";
+  schemaVersion: "1.0.0" | "1.1.0";
+  contentType?: ContentType;
   title: string | null;
   titleSource: "context" | "generated" | "unknown";
   meetingTime: {
@@ -172,8 +173,19 @@ export interface MeetingMinutes {
   risksAndIssues: RiskOrIssue[];
 }
 
+export type ContentType =
+  | "meeting"
+  | "speech"
+  | "lecture"
+  | "course"
+  | "interview"
+  | "report"
+  | "article_material"
+  | "other";
+
 export interface MeetingDetail {
   id: string;
+  sourceName: string;
   templateName: string;
   durationMs: number | null;
   processingDurationMs: number | null;
@@ -248,4 +260,9 @@ export interface SaveProviderSettingsInput {
 export interface ExportResult {
   status: "exported" | "cancelled";
   displayName?: string;
+}
+
+export interface PlaybackResult {
+  status: "opened" | "cancelled";
+  reboundSource: boolean;
 }

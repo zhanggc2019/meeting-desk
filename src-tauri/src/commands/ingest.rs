@@ -213,6 +213,7 @@ pub(crate) async fn import_paths(
                 .to_string()
         })
         .collect::<Vec<_>>();
+    let source_paths = paths.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _import_guard = import_gate
             .lock()
@@ -228,7 +229,7 @@ pub(crate) async fn import_paths(
         let mut artifacts = registry
             .lock()
             .map_err(|_| CommandError::new("ingest_failed", "音频导入状态不可用", true))?;
-        for candidate in &candidates {
+        for (candidate, source_path) in candidates.iter().zip(source_paths) {
             if let (Some(id), Some(mime_type), Some(byte_length)) = (
                 candidate.artifact_id.as_ref(),
                 candidate.mime_type.as_ref(),
@@ -239,6 +240,7 @@ pub(crate) async fn import_paths(
                     RegisteredArtifact {
                         id: id.clone(),
                         display_name: candidate.display_name.clone(),
+                        source_path,
                         mime_type: mime_type.clone(),
                         byte_length,
                         duration_ms: candidate.duration_ms,
@@ -464,6 +466,7 @@ mod tests {
         let artifact = RegisteredArtifact {
             id: "existing".to_string(),
             display_name: "existing.wav".to_string(),
+            source_path: temp.path().join("existing.wav"),
             mime_type: "audio/wav".to_string(),
             byte_length: 60,
             duration_ms: None,

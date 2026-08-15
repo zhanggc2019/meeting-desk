@@ -99,6 +99,7 @@ pub fn run() {
             commands::meetings::list_meetings_page,
             commands::meetings::get_meeting_detail,
             commands::meetings::get_meeting_markdown_preview,
+            commands::meetings::play_meeting_media,
             commands::meetings::delete_meeting,
             commands::meetings::export_meeting_markdown,
             commands::meetings::list_minutes_templates,

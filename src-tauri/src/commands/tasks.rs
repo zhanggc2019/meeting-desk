@@ -17,8 +17,9 @@ use crate::commands::CommandError;
 use crate::domain::{PersistedMeetingInput, SafeTaskError, TaskAction, TaskRecord, TaskStatus};
 use crate::ingest::{AudioArtifactRef, AudioSourceKind, IngestPolicy, StagingMetadata};
 use crate::minutes::{
-    build_prompt, validate_provider_candidate, MeetingContext, PromptBuildRequest,
-    ValidationOptions, BUILTIN_TEMPLATE_VERSION, MEETING_MINUTES_SCHEMA_VERSION,
+    build_prompt, content_type_for_template, normalize_content_type_fields,
+    validate_provider_candidate, MeetingContext, PromptBuildRequest, ValidationOptions,
+    BUILTIN_TEMPLATE_VERSION, MEETING_MINUTES_SCHEMA_VERSION,
 };
 use crate::providers::{
     build_minutes_provider, build_transcription_provider, CancellationToken, ManagedAudioArtifact,
@@ -1149,7 +1150,7 @@ async fn run_provider_pipeline(
         task_gate,
         &token,
     )?;
-    let minutes = validate_provider_candidate(
+    let mut minutes = validate_provider_candidate(
         candidate,
         MEETING_MINUTES_SCHEMA_VERSION,
         &transcript,
@@ -1157,6 +1158,10 @@ async fn run_provider_pipeline(
         ValidationOptions::default(),
     )
     .map_err(minutes_error)?;
+    if let Some(content_type) = content_type_for_template(&task.template_id) {
+        minutes.content_type = content_type;
+    }
+    normalize_content_type_fields(&mut minutes);
     info!(
         "[阶段5/6] 会议纪要结构校验完成: task_id={}, topic_count={}, decision_count={}, action_item_count={}",
         task.id,
@@ -1188,6 +1193,7 @@ async fn run_provider_pipeline(
         .save_completed_meeting(&PersistedMeetingInput {
             id: meeting_id.clone(),
             source_name: task.display_name.clone(),
+            source_path: Some(artifact.source_path.to_string_lossy().into_owned()),
             title,
             template_id: task.template_id.clone(),
             transcript: transcript.text.clone(),
@@ -1558,7 +1564,7 @@ fn display_stem(display_name: &str) -> String {
         .file_stem()
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or("会议纪要")
+        .unwrap_or("录音整理")
         .to_string()
 }
 
@@ -1599,6 +1605,7 @@ mod tests {
         RegisteredArtifact {
             id: id.to_string(),
             display_name: format!("{id}.wav"),
+            source_path: std::path::PathBuf::from(format!("{id}.wav")),
             mime_type: "audio/wav".to_string(),
             byte_length,
             duration_ms: None,
@@ -1686,6 +1693,7 @@ mod tests {
     fn mock_processing_providers() -> ProcessingProviders {
         let candidate = json!({
             "schemaVersion": MEETING_MINUTES_SCHEMA_VERSION,
+            "contentType": "meeting",
             "title": "Mock 会议纪要",
             "titleSource": "generated",
             "meetingTime": {"startAt": null, "endAt": null},
@@ -1928,7 +1936,7 @@ mod tests {
             ImportRequest {
                 selection_mode: ImportSelectionMode::Single,
             },
-            vec![source_path],
+            vec![source_path.clone()],
         );
         let reference = imported.items[0]
             .artifact
@@ -1938,6 +1946,7 @@ mod tests {
         let artifact = RegisteredArtifact {
             id: reference.id.clone(),
             display_name: "integration.wav".to_string(),
+            source_path,
             mime_type: reference.staging_metadata.mime_type,
             byte_length: reference.staging_metadata.byte_length,
             duration_ms: reference.staging_metadata.duration_ms,
@@ -1982,7 +1991,10 @@ mod tests {
             .expect("query meeting")
             .expect("meeting detail");
         assert!(detail.transcript.contains("Mock Provider"));
-        assert_eq!(detail.minutes["schemaVersion"], "1.0.0");
+        assert_eq!(
+            detail.minutes["schemaVersion"],
+            MEETING_MINUTES_SCHEMA_VERSION
+        );
         assert_eq!(
             detail.minutes["actionItems"][0]["owner"],
             serde_json::Value::Null
@@ -2011,6 +2023,7 @@ mod tests {
         let artifact = RegisteredArtifact {
             id: "artifact-recovery".to_string(),
             display_name: "recovery.wav".to_string(),
+            source_path: std::path::PathBuf::from("recovery.wav"),
             mime_type: "audio/wav".to_string(),
             byte_length: 128,
             duration_ms: None,
@@ -2072,6 +2085,7 @@ mod tests {
         let artifact = RegisteredArtifact {
             id: "artifact-retry-limit".to_string(),
             display_name: "retry-limit.wav".to_string(),
+            source_path: std::path::PathBuf::from("retry-limit.wav"),
             mime_type: "audio/wav".to_string(),
             byte_length: 128,
             duration_ms: None,
@@ -2110,7 +2124,7 @@ mod tests {
             ImportRequest {
                 selection_mode: ImportSelectionMode::Single,
             },
-            vec![source_path],
+            vec![source_path.clone()],
         );
         let reference = imported.items[0]
             .artifact
@@ -2120,6 +2134,7 @@ mod tests {
         let artifact = RegisteredArtifact {
             id: reference.id.clone(),
             display_name: "cancel.wav".to_string(),
+            source_path,
             mime_type: reference.staging_metadata.mime_type,
             byte_length: reference.staging_metadata.byte_length,
             duration_ms: reference.staging_metadata.duration_ms,
