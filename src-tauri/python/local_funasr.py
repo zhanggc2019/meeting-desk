@@ -32,24 +32,66 @@ def detect_language(raw_text: str) -> str | None:
     return match.group("language")
 
 
+def normalize_timestamp(value: Any) -> int | None:
+    """Convert a non-negative FunASR millisecond timestamp to an integer."""
+    if isinstance(value, bool):
+        return None
+    try:
+        timestamp = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return timestamp if timestamp >= 0 else None
+
+
+def normalize_sentence_segments(item: dict[str, Any], postprocess: Any) -> list[dict[str, Any]]:
+    """Normalize FunASR sentence_info records while preserving real VAD boundaries."""
+    raw_segments = item.get("sentence_info")
+    if not isinstance(raw_segments, list):
+        return []
+
+    segments: list[dict[str, Any]] = []
+    for raw_segment in raw_segments:
+        if not isinstance(raw_segment, dict):
+            continue
+        raw_text = raw_segment.get("sentence") or raw_segment.get("text")
+        if not isinstance(raw_text, str):
+            continue
+        text = postprocess(raw_text).strip()
+        if not text:
+            continue
+        start_ms = normalize_timestamp(raw_segment.get("start", raw_segment.get("start_time")))
+        end_ms = normalize_timestamp(raw_segment.get("end", raw_segment.get("end_time")))
+        if start_ms is None or end_ms is None or end_ms < start_ms:
+            start_ms = None
+            end_ms = None
+        segments.append({"start_ms": start_ms, "end_ms": end_ms, "text": text})
+    return segments
+
+
 def normalize_results(results: Any, postprocess: Any) -> dict[str, Any]:
     """Normalize FunASR result dictionaries into the bounded Rust JSON contract."""
     if not isinstance(results, list):
         raise ValueError("invalid result container")
     texts: list[str] = []
+    segments: list[dict[str, Any]] = []
     detected_language: str | None = None
     for item in results:
         if not isinstance(item, dict) or not isinstance(item.get("text"), str):
             raise ValueError("invalid result item")
         raw_text = item["text"]
         detected_language = detected_language or detect_language(raw_text)
-        text = postprocess(raw_text).strip()
-        if text:
-            texts.append(text)
+        item_segments = normalize_sentence_segments(item, postprocess)
+        if item_segments:
+            segments.extend(item_segments)
+            texts.append("\n".join(segment["text"] for segment in item_segments))
+        else:
+            text = postprocess(raw_text).strip()
+            if text:
+                texts.append(text)
     text = "\n".join(texts).strip()
     if not text:
         raise ValueError("empty transcript")
-    return {"text": text, "language": detected_language, "segments": []}
+    return {"text": text, "language": detected_language, "segments": segments}
 
 
 def write_result(path: Path, payload: dict[str, Any]) -> None:
@@ -73,6 +115,18 @@ def load_model(
     )
 
 
+def generate_transcript(model: Any, audio: Path | str, language: str) -> Any:
+    """Run offline inference and request VAD-backed sentence timestamps for paragraph output."""
+    return model.generate(
+        input=str(audio),
+        cache={},
+        language=language,
+        use_itn=True,
+        batch_size_s=60,
+        sentence_timestamp=True,
+    )
+
+
 def main() -> int:
     """Load local-only dependencies and run one offline inference operation."""
     args = parse_args()
@@ -92,13 +146,7 @@ def main() -> int:
     if args.audio is None or args.output is None:
         return 23
     try:
-        results = model.generate(
-            input=str(args.audio),
-            cache={},
-            language=args.language,
-            use_itn=True,
-            batch_size_s=60,
-        )
+        results = generate_transcript(model, args.audio, args.language)
     except Exception:
         return 22
     try:

@@ -10,10 +10,35 @@ import { formatDateTime, formatDuration, formatTimestamp } from "../../utils/for
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 
 type DetailTab = "minutes" | "markdown" | "transcript";
+const TRANSCRIPT_PARAGRAPH_TARGET = 180;
 
 /** 将条目数组转换为适合用户复制的纯文本。 */
 function statementsToText(items: SupportedStatement[]): string {
   return items.map((item, index) => `${index + 1}. ${item.content}`).join("\n");
+}
+
+/** 将没有结构化分段的历史逐字稿按原有换行和句末标点整理为可读段落。 */
+export function splitTranscriptParagraphs(text: string): string[] {
+  const paragraphs: string[] = [];
+  const sourceLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+
+  for (const line of sourceLines) {
+    const sentences = line.match(/[^。！？!?；;.]+[。！？!?；;.]+|[^。！？!?；;.]+$/g) ?? [line];
+    let paragraph = "";
+    for (const sentence of sentences) {
+      const normalized = sentence.trim();
+      if (!normalized) continue;
+      if (paragraph && paragraph.length + normalized.length > TRANSCRIPT_PARAGRAPH_TARGET) {
+        paragraphs.push(paragraph);
+        paragraph = normalized;
+      } else {
+        paragraph += normalized;
+      }
+    }
+    if (paragraph) paragraphs.push(paragraph);
+  }
+
+  return paragraphs.length > 0 ? paragraphs : [text];
 }
 
 /** 渲染结构化纪要及完整逐字稿详情。 */
@@ -192,7 +217,7 @@ export function MeetingDetailPage() {
       ) : tab === "transcript" ? (
         <section className="transcript-panel" role="tabpanel">
           <div className="section-heading transcript-heading"><div><h2>完整逐字稿</h2><p>{transcript.language ?? "语言未标注"} · {transcript.segments.length > 0 ? `${transcript.segments.length} 个分段` : "纯文本"}</p></div><button className="button secondary" type="button" onClick={() => void handleCopy(transcript.text, "完整逐字稿")}><Clipboard size={16} aria-hidden="true" />复制全文</button></div>
-          {transcript.segments.length > 0 ? <div className="transcript-segments">{transcript.segments.map((segment) => <article key={segment.id}><div className="segment-meta">{segment.startMs !== undefined ? <time>{formatTimestamp(segment.startMs)}</time> : null}{segment.speakerLabel ? <span>{segment.speakerLabel}</span> : null}{segment.confidence !== undefined && segment.confidence < 0.7 ? <span className="low-confidence">需核对</span> : null}</div><p>{segment.text}</p></article>)}</div> : <pre className="transcript-plain">{transcript.text}</pre>}
+          {transcript.segments.length > 0 ? <div className="transcript-segments">{transcript.segments.map((segment) => <article key={segment.id}><div className="segment-meta">{segment.startMs !== undefined ? <time>{formatTimestamp(segment.startMs)}</time> : null}{segment.speakerLabel ? <span>{segment.speakerLabel}</span> : null}{segment.confidence !== undefined && segment.confidence < 0.7 ? <span className="low-confidence">需核对</span> : null}</div><p>{segment.text}</p></article>)}</div> : <div className="transcript-plain">{splitTranscriptParagraphs(transcript.text).map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 24)}`}>{paragraph}</p>)}</div>}
         </section>
       ) : (
         <section className="markdown-preview-panel" role="tabpanel" aria-label="Markdown 文档预览">

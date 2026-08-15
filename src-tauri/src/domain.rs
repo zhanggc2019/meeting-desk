@@ -174,7 +174,7 @@ impl Default for PublicProviderConfig {
             credential_preset_id: None,
             secret_configured: false,
             connect_timeout_ms: 10_000,
-            request_timeout_ms: 60_000,
+            request_timeout_ms: 180_000,
             max_retries: 2,
             ready: false,
             readiness: ProviderReadiness::Incomplete,

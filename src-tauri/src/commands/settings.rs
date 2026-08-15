@@ -435,6 +435,11 @@ fn migrate_public_provider(
         provider.max_retries = 0;
         return provider;
     }
+    if target == ProviderTarget::Minutes && provider.request_timeout_ms == 60_000 {
+        // 旧默认 60 秒对云端 LLM 生成完整会议纪要过短（易触发 operation_timeout），
+        // 提升到 180 秒；仅迁移旧默认值，用户自定义时长不受影响。
+        provider.request_timeout_ms = 180_000;
+    }
     let was_legacy_mock = provider.preset_id == config::PRESET_MOCK || provider.kind == "mock";
     if was_legacy_mock {
         provider.preset_id = match target {
@@ -1313,5 +1318,50 @@ mod tests {
         assert_eq!(evaluated.model, config::LOCAL_FUNASR_MODEL);
         assert!(!evaluated.secret_configured);
         assert!(evaluated.ready);
+    }
+
+    /// 验证纪要 Provider 的旧默认 60 秒超时会提升到 180 秒，
+    /// 避免云端 LLM 生成完整会议纪要时触发 operation_timeout。
+    #[test]
+    fn minutes_legacy_default_timeout_upgrades_to_180s() {
+        let provider = PublicProviderConfig {
+            preset_id: config::PRESET_CUSTOM_OPENAI.to_string(),
+            kind: "openai_compatible".to_string(),
+            endpoint: "https://api.example.test/v1".to_string(),
+            model: "example-model".to_string(),
+            local_model_path: String::new(),
+            credential_preset_id: None,
+            secret_configured: true,
+            connect_timeout_ms: 10_000,
+            request_timeout_ms: 60_000,
+            max_retries: 2,
+            ready: false,
+            readiness: crate::domain::ProviderReadiness::Incomplete,
+            validation_message: String::new(),
+        };
+        let migrated = migrate_public_provider(provider, ProviderTarget::Minutes, true);
+        assert_eq!(migrated.request_timeout_ms, 180_000);
+    }
+
+    /// 验证用户自定义的纪要超时不会被迁移覆盖。
+    #[test]
+    fn minutes_custom_timeout_is_preserved() {
+        let provider = PublicProviderConfig {
+            preset_id: config::PRESET_CUSTOM_OPENAI.to_string(),
+            kind: "openai_compatible".to_string(),
+            endpoint: "https://api.example.test/v1".to_string(),
+            model: "example-model".to_string(),
+            local_model_path: String::new(),
+            credential_preset_id: None,
+            secret_configured: true,
+            connect_timeout_ms: 10_000,
+            request_timeout_ms: 90_000,
+            max_retries: 2,
+            ready: false,
+            readiness: crate::domain::ProviderReadiness::Incomplete,
+            validation_message: String::new(),
+        };
+        let migrated = migrate_public_provider(provider, ProviderTarget::Minutes, true);
+        assert_eq!(migrated.request_timeout_ms, 90_000);
     }
 }

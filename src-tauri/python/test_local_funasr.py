@@ -33,6 +33,49 @@ class LocalFunAsrTests(unittest.TestCase):
         self.assertEqual(payload["language"], "zh")
         self.assertEqual(payload["segments"], [])
 
+    def test_preserves_sentence_info_as_timestamped_segments(self) -> None:
+        """Convert FunASR VAD sentence records into readable transcript paragraphs."""
+        payload = local_funasr.normalize_results(
+            [
+                {
+                    "text": "<|zh|>first second",
+                    "sentence_info": [
+                        {"start": 120, "end": 930, "sentence": "<|zh|>first"},
+                        {"start": 1_100.4, "end": 2_300, "text": "<|zh|>second"},
+                    ],
+                }
+            ],
+            lambda value: value.split(">", 1)[-1],
+        )
+
+        self.assertEqual(payload["text"], "first\nsecond")
+        self.assertEqual(
+            payload["segments"],
+            [
+                {"start_ms": 120, "end_ms": 930, "text": "first"},
+                {"start_ms": 1_100, "end_ms": 2_300, "text": "second"},
+            ],
+        )
+
+    def test_keeps_text_when_sentence_metadata_is_invalid(self) -> None:
+        """Keep readable text and omit invented timestamps for malformed sentence metadata."""
+        payload = local_funasr.normalize_results(
+            [
+                {
+                    "text": "<|zh|>content",
+                    "sentence_info": [
+                        {"start": 900, "end": 100, "text": "<|zh|>content"},
+                    ],
+                }
+            ],
+            lambda value: value.split(">", 1)[-1],
+        )
+
+        self.assertEqual(
+            payload["segments"],
+            [{"start_ms": None, "end_ms": None, "text": "content"}],
+        )
+
     def test_rejects_empty_or_malformed_results(self) -> None:
         """Reject empty transcripts and provider results with an unknown shape."""
         with self.assertRaises(ValueError):
@@ -69,6 +112,25 @@ class LocalFunAsrTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_generate_requests_vad_sentence_timestamps(self) -> None:
+        """Request sentence metadata so local VAD boundaries survive the Python adapter."""
+        calls: list[dict[str, object]] = []
+
+        class FakeModel:
+            """Capture inference arguments without loading an ASR model."""
+
+            def generate(self, **kwargs: object) -> list[dict[str, str]]:
+                """Record one deterministic generate call."""
+                calls.append(kwargs)
+                return [{"text": "fixture"}]
+
+        result = local_funasr.generate_transcript(FakeModel(), r"D:\audio.wav", "zh")
+
+        self.assertEqual(result, [{"text": "fixture"}])
+        self.assertEqual(calls[0]["input"], r"D:\audio.wav")
+        self.assertEqual(calls[0]["language"], "zh")
+        self.assertTrue(calls[0]["sentence_timestamp"])
 
 
 if __name__ == "__main__":

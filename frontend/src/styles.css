@@ -277,15 +277,20 @@ select:focus-visible,
 .icon-button:disabled { opacity: .4; cursor: not-allowed; }
 
 .file-dropzone {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 42px minmax(280px, 1fr) auto;
+  grid-template-areas:
+    "icon title actions"
+    "icon description actions"
+    "icon formats actions";
   align-items: center;
-  justify-content: center;
-  min-height: 245px;
-  padding: 34px;
+  column-gap: 18px;
+  row-gap: 3px;
+  min-height: 132px;
+  padding: 18px 22px;
   background: var(--surface);
   border: 1px dashed #b8c6d0;
-  border-radius: 12px;
+  border-radius: 9px;
   transition: border-color .16s ease, background .16s ease, transform .16s ease;
 }
 .file-dropzone:hover, .file-dropzone.is-dragging { border-color: #7795ab; background: #f7fafc; }
@@ -299,11 +304,11 @@ select:focus-visible,
   transform: none;
 }
 .file-dropzone.is-disabled .dropzone-icon { color: #7e8c97; background: #e7ecef; }
-.dropzone-icon { display: grid; place-items: center; width: 50px; height: 50px; color: var(--accent); background: var(--accent-soft); border-radius: 14px; }
-.file-dropzone h2 { margin: 17px 0 5px; font-size: 18px; }
-.file-dropzone p { margin: 0; color: var(--muted); }
-.file-dropzone small { margin-top: 14px; color: var(--faint); }
-.dropzone-actions { display: flex; align-items: center; gap: 12px; margin-top: 20px; }
+.dropzone-icon { grid-area: icon; display: grid; place-items: center; width: 42px; height: 42px; color: var(--accent); background: var(--accent-soft); border-radius: 8px; }
+.file-dropzone h2 { grid-area: title; align-self: end; margin: 0; font-size: 16px; }
+.file-dropzone p { grid-area: description; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.file-dropzone small { grid-area: formats; align-self: start; margin-top: 2px; color: var(--faint); font-size: 11px; }
+.dropzone-actions { grid-area: actions; display: flex; align-items: center; gap: 12px; margin-left: 14px; }
 
 .import-mode-section {
   display: grid;
@@ -581,7 +586,9 @@ progress { display: block; width: 95px; height: 3px; margin-top: 5px; accent-col
 .segment-meta time { color: var(--accent-strong); font-variant-numeric: tabular-nums; }
 .segment-meta .low-confidence { color: var(--warning); }
 .transcript-segments p { margin: 0; line-height: 1.75; }
-.transcript-plain { padding: 18px; white-space: pre-wrap; background: #fff; border: 1px solid var(--line); border-radius: 9px; font: inherit; line-height: 1.75; }
+.transcript-plain { padding: 18px; background: #fff; border: 1px solid var(--line); border-radius: 9px; font: inherit; line-height: 1.85; }
+.transcript-plain p { margin: 0 0 1em; }
+.transcript-plain p:last-child { margin-bottom: 0; }
 
 .markdown-preview-panel { max-width: 1020px; padding: 26px 0 50px; animation: preview-enter .18s ease-out both; }
 .preview-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 18px; }

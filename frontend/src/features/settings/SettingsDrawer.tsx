@@ -154,7 +154,7 @@ function getEmptySettings(): PublicSettings {
   const common = {
     secretConfigured: false,
     connectTimeoutMs: 10_000,
-    requestTimeoutMs: 120_000,
+    requestTimeoutMs: 180_000,
     maxRetries: 2,
   };
   return {

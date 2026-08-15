@@ -227,7 +227,7 @@ export function TasksPage() {
           {total > 0 ? <Pagination page={page} totalPages={totalPages} total={total} disabled={loading} onPageChange={changePage} /> : null}
         </section>
 
-        {selectedTask ? <TaskInspector task={selectedTask} nowMs={nowMs} onOpenMeeting={openMeeting} onOpenSettings={() => useAppStore.getState().openSettings()} /> : null}
+        {selectedTask ? <TaskInspector task={selectedTask} nowMs={nowMs} retrying={busyTaskId === selectedTask.id} onRetry={() => void retryTask(selectedTask.id)} onOpenMeeting={openMeeting} onOpenSettings={() => useAppStore.getState().openSettings()} /> : null}
       </div>
 
       <ConfirmDialog
@@ -257,12 +257,14 @@ export function TasksPage() {
 interface TaskInspectorProps {
   task: ProcessingTask;
   nowMs: number;
+  retrying: boolean;
+  onRetry: () => void;
   onOpenMeeting: (meetingId: string) => void;
   onOpenSettings: () => void;
 }
 
 /** 在右侧检查器中展示任务的真实阶段与安全错误。 */
-function TaskInspector({ task, nowMs, onOpenMeeting, onOpenSettings }: TaskInspectorProps) {
+function TaskInspector({ task, nowMs, retrying, onRetry, onOpenMeeting, onOpenSettings }: TaskInspectorProps) {
   const currentIndex = timelineStages.indexOf(task.status as (typeof timelineStages)[number]);
   return (
     <aside className="task-inspector" aria-label={`${task.displayName} 任务详情`}>
@@ -278,6 +280,7 @@ function TaskInspector({ task, nowMs, onOpenMeeting, onOpenSettings }: TaskInspe
         <div className="task-error" role="status">
           <XCircle size={18} aria-hidden="true" />
           <div><strong>{task.error.safeMessage}</strong><small>{task.error.code}</small></div>
+          {task.availableActions.includes("retry") ? <button className="button quiet" type="button" onClick={onRetry} disabled={retrying}><RotateCcw size={14} aria-hidden="true" />{retrying ? "正在重试" : "重试任务"}</button> : null}
           {[401, 403].includes(task.error.httpStatus ?? 0) ? <button className="button quiet" type="button" onClick={onOpenSettings}>前往设置</button> : null}
         </div>
       ) : null}

@@ -18,7 +18,7 @@ use super::{
 };
 
 const ADAPTER_ID: &str = "local_funasr_python";
-const ADAPTER_VERSION: &str = "2";
+const ADAPTER_VERSION: &str = "3";
 const APP_DATA_DIRECTORY: &str = "com.internal.meetingdesk";
 const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.yaml", "model.pt", "tokens.json"];
@@ -419,7 +419,7 @@ impl LocalFunAsrProvider {
 
 #[async_trait]
 impl TranscriptionProvider for LocalFunAsrProvider {
-    /// Declares local replay and cancellation behavior without claiming unavailable timestamps.
+    /// Declares local replay, cancellation, and VAD-derived segment timestamp behavior.
     fn capabilities(&self) -> TranscriptionCapabilities {
         TranscriptionCapabilities {
             evidence: CapabilityEvidence::Verified,
@@ -433,7 +433,7 @@ impl TranscriptionProvider for LocalFunAsrProvider {
             max_audio_bytes: None,
             max_duration_ms: None,
             supports_async_jobs: false,
-            supports_timestamps: false,
+            supports_timestamps: true,
             supports_speaker_labels: false,
             supports_confidence: false,
             supports_remote_cancel: false,
@@ -800,7 +800,7 @@ p.add_argument('--check', action='store_true')
 a = p.parse_args()
 if not a.check:
     with open(a.output, 'w', encoding='utf-8') as f:
-        json.dump({'text':'local transcript','language':'zh','segments':[]}, f)
+        json.dump({'text':'first paragraph\nsecond paragraph','language':'zh','segments':[{'start_ms':120,'end_ms':930,'text':'first paragraph'},{'start_ms':1100,'end_ms':2300,'text':'second paragraph'}]}, f)
 "#,
         )
         .expect("script fixture");
@@ -820,10 +820,29 @@ if not a.check:
             )
             .await
             .expect("local subprocess transcript");
-        assert_eq!(transcript.text, "local transcript");
+        assert_eq!(transcript.text, "first paragraph\nsecond paragraph");
+        assert_eq!(transcript.segments.len(), 2);
+        assert_eq!(transcript.segments[0].start_ms, Some(120));
+        assert_eq!(transcript.segments[1].end_ms, Some(2_300));
         assert_eq!(transcript.provider_metadata.provider_id, "local_funasr");
-        assert_eq!(transcript.provider_metadata.adapter_version, "2");
-        assert!(!format!("{transcript:?}").contains("local transcript"));
+        assert_eq!(transcript.provider_metadata.adapter_version, "3");
+        assert!(!format!("{transcript:?}").contains("first paragraph"));
+    }
+
+    /// 验证本地适配器只声明已经由 VAD 句段结果提供的能力。
+    #[test]
+    fn capabilities_include_vad_segment_timestamps() {
+        let provider = LocalFunAsrProvider::from_paths(
+            "python",
+            "local_funasr.py",
+            "model",
+            "SenseVoiceSmall",
+        );
+
+        let capabilities = provider.capabilities();
+        assert!(capabilities.supports_timestamps);
+        assert!(!capabilities.supports_speaker_labels);
+        assert!(!capabilities.supports_confidence);
     }
 
     /// 验证 Windows 本地推理子进程使用禁止创建控制台窗口的启动标志。

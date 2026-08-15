@@ -1059,7 +1059,9 @@ async fn run_provider_pipeline(
             transcription_started.elapsed().as_millis(),
         ),
     }
-    let transcript = transcript_result.map_err(provider_error)?;
+    let transcript = transcript_result.map_err(|error| {
+        provider_stage_error(error, "语音转写", providers.transcription_timeout_ms)
+    })?;
 
     // 阶段 3：校验转写结果
     info!(
@@ -1130,7 +1132,9 @@ async fn run_provider_pipeline(
             minutes_started.elapsed().as_millis(),
         ),
     }
-    let candidate = candidate_result.map_err(provider_error)?;
+    let candidate = candidate_result.map_err(|error| {
+        provider_stage_error(error, "会议纪要生成", providers.minutes_timeout_ms)
+    })?;
 
     // 阶段 5：校验会议纪要 Schema
     info!(
@@ -1426,6 +1430,22 @@ fn provider_error(error: ProviderError) -> SafeTaskError {
         http_status: error.http_status,
         retry_after_ms: error.retry_after_ms,
     }
+}
+
+/// 将总超时转换成包含业务阶段和实际限制的可操作任务错误。
+fn provider_stage_error(
+    mut error: ProviderError,
+    stage_name: &str,
+    timeout_ms: u64,
+) -> SafeTaskError {
+    if error.code == "operation_timeout" {
+        let timeout_seconds = timeout_ms.div_ceil(1_000);
+        error.retryable = true;
+        error.safe_message = format!(
+            "{stage_name}超过 {timeout_seconds} 秒，请重试；如仍超时，请在对应设置的高级设置中调高请求超时"
+        );
+    }
+    provider_error(error)
 }
 
 /// 把纪要安全错误转换为前端任务错误。
@@ -1744,6 +1764,19 @@ mod tests {
 
         task.available_actions.clear();
         assert!(!task.retains_audio_artifact());
+    }
+
+    /// 验证管线总超时会带上阶段和实际秒数，并允许用户显式重试。
+    #[test]
+    fn operation_timeout_becomes_actionable_stage_error() {
+        let error =
+            provider_stage_error(ProviderError::operation_timeout(), "会议纪要生成", 60_001);
+
+        assert_eq!(error.code, "operation_timeout");
+        assert!(error.retryable);
+        assert!(error.safe_message.contains("会议纪要生成"));
+        assert!(error.safe_message.contains("61 秒"));
+        assert!(error.safe_message.contains("高级设置"));
     }
 
     /// 验证所有可安全清理的终止任务都提供删除动作，活动任务始终禁止删除。

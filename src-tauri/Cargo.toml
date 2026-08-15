@@ -1,6 +1,6 @@
 [package]
 name = "meeting-desk"
-version = "0.3.8"
+version = "0.3.9"
 description = "Windows offline media transcription and meeting minutes desktop tool"
 authors = ["Internal Tools Team"]
 edition = "2021"

@@ -231,6 +231,20 @@ describe("Windows 离线媒体工作台", () => {
     expect(within(inspector).queryByText(/预计 .* 完成/)).not.toBeInTheDocument();
   });
 
+  it("允许从任务详情的错误卡片直接重试可恢复失败", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const retryTask = vi.spyOn(client, "retryProcessingTask");
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "任务队列" }));
+    await user.click(await screen.findByRole("button", { name: "客户访谈.mp3" }));
+
+    const inspector = screen.getByLabelText("客户访谈.mp3 任务详情");
+    await user.click(within(inspector).getByRole("button", { name: "重试任务" }));
+
+    await waitFor(() => expect(retryTask).toHaveBeenCalledWith("task-failed-1"));
+  });
+
   it("确认后删除失败任务并从队列移除", async () => {
     const user = userEvent.setup();
     render(<App client={createMockDesktopClient()} />);
@@ -326,6 +340,31 @@ describe("Windows 离线媒体工作台", () => {
     expect(screen.getAllByText("说话人 A")).toHaveLength(2);
     await user.click(screen.getByRole("button", { name: "复制全文" }));
     expect(await screen.findByText("已复制完整逐字稿")).toBeInTheDocument();
+  });
+
+  it("为没有结构化分段的历史逐字稿生成可读段落", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const originalGetMeetingDetail = client.getMeetingDetail;
+    client.getMeetingDetail = async (id) => {
+      const detail = await originalGetMeetingDetail(id);
+      return {
+        ...detail,
+        transcript: {
+          ...detail.transcript,
+          text: `${"第一句内容很长。".repeat(24)}第二段单独保留。`,
+          segments: [],
+        },
+      };
+    };
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "会议记录" }));
+    await user.click(await screen.findByRole("button", { name: /^产品交付节奏讨论/ }));
+    await user.click(screen.getByRole("tab", { name: "完整逐字稿" }));
+
+    const transcript = screen.getByRole("tabpanel");
+    expect(transcript.querySelectorAll(".transcript-plain p").length).toBeGreaterThan(1);
+    expect(within(transcript).getByText(/第二段单独保留。$/)).toBeInTheDocument();
   });
 
   it("确认后删除会议和关联记录并返回列表", async () => {
