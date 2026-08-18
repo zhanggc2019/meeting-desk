@@ -342,21 +342,47 @@ describe("Windows 离线媒体工作台", () => {
     expect(await screen.findByText("已复制完整逐字稿")).toBeInTheDocument();
   });
 
-  it("从录音列表和详情页使用系统播放器试听原始媒体", async () => {
+  it("从录音列表和详情页直接在应用内试听原始媒体", async () => {
     const user = userEvent.setup();
     const client = createMockDesktopClient();
     const playMeetingMedia = vi.spyOn(client, "playMeetingMedia")
-      .mockResolvedValue({ status: "opened", reboundSource: true });
+      .mockResolvedValue({ status: "ready", reboundSource: true, sourceUrl: "/test-recording.mp3" });
     render(<App client={client} />);
     await user.click(screen.getByRole("button", { name: "录音记录" }));
 
     await user.click(await screen.findByRole("button", { name: "试听 产品交付节奏讨论" }));
     await waitFor(() => expect(playMeetingMedia).toHaveBeenCalledWith("meeting-demo-1"));
-    expect(await screen.findByText("已关联原文件，并使用系统播放器打开")).toBeInTheDocument();
+    expect(await screen.findByText("已关联原文件，正在应用内播放")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "正在试听 产品交付节奏讨论" }).querySelector("audio")).toHaveAttribute("src", "/test-recording.mp3");
 
     await user.click(screen.getByRole("button", { name: /^产品交付节奏讨论/ }));
     await user.click(await screen.findByRole("button", { name: "试听" }));
     await waitFor(() => expect(playMeetingMedia).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("region", { name: "正在试听 产品交付节奏讨论.m4a" }).querySelector("audio")).toBeInTheDocument();
+  });
+
+  it("可组合选择摘要、逐字稿和 AI 纪要并导出 Word 或 PDF", async () => {
+    const user = userEvent.setup();
+    const client = createMockDesktopClient();
+    const exportMeetingDocument = vi.spyOn(client, "exportMeetingDocument");
+    render(<App client={client} />);
+    await user.click(screen.getByRole("button", { name: "录音记录" }));
+
+    await user.click(await screen.findByRole("button", { name: "导出 产品交付节奏讨论" }));
+    const dialog = screen.getByRole("dialog", { name: /导出“产品交付节奏讨论”/ });
+    expect(within(dialog).getByRole("checkbox", { name: /摘要/ })).toBeChecked();
+    expect(within(dialog).getByRole("checkbox", { name: /逐字稿/ })).toBeChecked();
+    expect(within(dialog).getByRole("checkbox", { name: /AI 纪要/ })).toBeChecked();
+
+    await user.click(within(dialog).getByRole("checkbox", { name: /逐字稿/ }));
+    await user.click(within(dialog).getByRole("radio", { name: /PDF/ }));
+    await user.click(within(dialog).getByRole("button", { name: "导出 PDF" }));
+
+    await waitFor(() => expect(exportMeetingDocument).toHaveBeenCalledWith("meeting-demo-1", {
+      format: "pdf",
+      contents: ["summary", "minutes"],
+    }));
+    expect(await screen.findByText("PDF 文档已导出")).toBeInTheDocument();
   });
 
   it("按演讲内容类型展示演讲结构且不渲染会议决策和待办", async () => {
@@ -736,7 +762,7 @@ describe("Windows 离线媒体工作台", () => {
     await user.click(await screen.findByRole("button", { name: "文档预览" }));
     const panel = await screen.findByRole("dialog", { name: "Markdown 文档预览" });
     expect(panel.parentElement).toBe(document.body);
-    expect(within(panel).getByRole("heading", { name: "Markdown 文档" })).toBeInTheDocument();
+    expect(within(panel).getByRole("heading", { name: "纪要与逐字稿" })).toBeInTheDocument();
     expect(await within(panel).findByRole("heading", { name: "产品交付节奏讨论" })).toBeInTheDocument();
     expect(within(panel).getByRole("table")).toBeInTheDocument();
     expect(within(panel).queryByText("正在生成预览…")).not.toBeInTheDocument();

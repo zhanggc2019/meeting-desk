@@ -262,7 +262,17 @@ export interface ExportResult {
   displayName?: string;
 }
 
+export type ExportFormat = "docx" | "pdf";
+
+export type ExportContent = "summary" | "transcript" | "minutes";
+
+export interface ExportMeetingRequest {
+  format: ExportFormat;
+  contents: ExportContent[];
+}
+
 export interface PlaybackResult {
-  status: "opened" | "cancelled";
+  status: "ready" | "cancelled";
   reboundSource: boolean;
+  sourceUrl?: string;
 }

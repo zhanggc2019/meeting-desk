@@ -2,11 +2,13 @@ import { CirclePlay, Clipboard, Download, FileSearch, Plus, Search, Trash2 } fro
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { Pagination } from "../../components/ui/Pagination";
-import type { MeetingSummary } from "../../contracts/desktop";
+import type { ExportMeetingRequest, MeetingSummary } from "../../contracts/desktop";
 import { useDesktopClient } from "../../services/DesktopClientContext";
 import { getSafeErrorMessage } from "../../services/desktopClient";
 import { useAppStore } from "../../stores/appStore";
 import { formatDateTime, formatDuration } from "../../utils/format";
+import { MeetingAudioPlayer } from "./MeetingAudioPlayer";
+import { MeetingExportDialog } from "./MeetingExportDialog";
 
 const MEETINGS_PAGE_SIZE = 10;
 
@@ -28,6 +30,9 @@ export function MeetingsPage() {
   const [deleteTarget, setDeleteTarget] = useState<MeetingSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [openingPlaybackId, setOpeningPlaybackId] = useState<string | null>(null);
+  const [playback, setPlayback] = useState<{ sourceUrl: string; title: string } | null>(null);
+  const [exportTarget, setExportTarget] = useState<MeetingSummary | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -70,25 +75,35 @@ export function MeetingsPage() {
     }
   }
 
-  /** 调用桌面后端导出指定会议的 Markdown。 */
-  async function handleExport(meetingId: string) {
+  /** 调用桌面后端按用户选择导出指定录音的 Word 或 PDF。 */
+  async function handleExport(request: ExportMeetingRequest): Promise<boolean> {
+    if (!exportTarget || exporting) return false;
+    setExporting(true);
+    setError(null);
     try {
-      const result = await client.exportMeetingMarkdown(meetingId);
-      if (result.status === "exported") setNotice("Markdown 已导出");
+      const result = await client.exportMeetingDocument(exportTarget.id, request);
+      if (result.status === "exported") {
+        setNotice(`${request.format === "docx" ? "Word" : "PDF"} 文档已导出`);
+        return true;
+      }
     } catch (reason) {
       setError(getSafeErrorMessage(reason));
+    } finally {
+      setExporting(false);
     }
+    return false;
   }
 
-  /** 使用系统播放器试听录音，旧记录会由桌面端引导重新关联原文件。 */
+  /** 获取录音访问地址并在记录页内播放，旧记录会引导重新关联原文件。 */
   async function handlePlayback(meeting: MeetingSummary) {
     if (openingPlaybackId) return;
     setOpeningPlaybackId(meeting.id);
     setError(null);
     try {
       const result = await client.playMeetingMedia(meeting.id);
-      if (result.status === "opened") {
-        setNotice(result.reboundSource ? "已关联原文件，并使用系统播放器打开" : "已使用系统播放器打开");
+      if (result.status === "ready" && result.sourceUrl) {
+        setPlayback({ sourceUrl: result.sourceUrl, title: meeting.title ?? meeting.summary ?? "未命名录音" });
+        setNotice(result.reboundSource ? "已关联原文件，正在应用内播放" : "正在应用内播放");
       }
     } catch (reason) {
       setError(getSafeErrorMessage(reason));
@@ -170,9 +185,9 @@ export function MeetingsPage() {
                   <td>{formatDuration(item.processingDurationMs)}</td>
                   <td>{item.templateName}</td>
                   <td className="cell-actions">
-                    <button className="icon-button playback-icon-action" type="button" aria-label={`试听 ${item.title ?? "未命名录音"}`} title="使用系统播放器试听" disabled={openingPlaybackId !== null} onClick={() => void handlePlayback(item)}><CirclePlay size={17} /></button>
+                    <button className="icon-button playback-icon-action" type="button" aria-label={`试听 ${item.title ?? "未命名录音"}`} title="在应用内试听" disabled={openingPlaybackId !== null} onClick={() => void handlePlayback(item)}><CirclePlay size={17} /></button>
                     <button className="icon-button" type="button" aria-label={`复制 ${item.title ?? "未命名录音"} 的摘要`} disabled={!item.summary} onClick={() => void handleCopySummary(item)}><Clipboard size={16} /></button>
-                    <button className="icon-button" type="button" aria-label={`导出 ${item.title ?? "未命名录音"}`} onClick={() => void handleExport(item.id)}><Download size={16} /></button>
+                    <button className="icon-button" type="button" aria-label={`导出 ${item.title ?? "未命名录音"}`} onClick={() => setExportTarget(item)}><Download size={16} /></button>
                     <button className="icon-button delete-icon-action" type="button" aria-label={`删除 ${item.title ?? "未命名录音"}`} title="删除记录" onClick={() => setDeleteTarget(item)}><Trash2 size={16} /></button>
                   </td>
                 </tr>
@@ -182,6 +197,16 @@ export function MeetingsPage() {
         </div>
       ) : null}
       {total > 0 ? <Pagination page={page} totalPages={totalPages} total={total} disabled={loading} onPageChange={setPage} /> : null}
+
+      {playback ? <div className="meeting-audio-dock"><MeetingAudioPlayer sourceUrl={playback.sourceUrl} title={playback.title} onClose={() => setPlayback(null)} onPlaybackError={() => setError("当前媒体格式无法在应用内播放，请转换为 MP3 或 WAV 后重试")} /></div> : null}
+
+      <MeetingExportDialog
+        open={exportTarget !== null}
+        title={exportTarget?.title ?? "未命名录音"}
+        busy={exporting}
+        onClose={() => setExportTarget(null)}
+        onExport={handleExport}
+      />
 
       <ConfirmDialog
         open={deleteTarget !== null}

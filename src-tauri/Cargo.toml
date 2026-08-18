@@ -1,6 +1,6 @@
 [package]
 name = "meeting-desk"
-version = "0.3.11"
+version = "0.3.12"
 description = "Windows offline media transcription and meeting minutes desktop tool"
 authors = ["Internal Tools Team"]
 edition = "2021"
@@ -16,7 +16,10 @@ tauri-build = { version = "2", features = [] }
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+docx-rs = { version = "0.4", default-features = false }
+genpdf = "0.2"
 hex = "0.4"
+printpdf = { version = "0.3.4", default-features = false }
 keyring = { version = "3", features = ["windows-native"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 regex = "1"
@@ -24,7 +27,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-updater = "2.10.1"
@@ -34,6 +37,3 @@ tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1", features = ["serde", "v4"] }
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

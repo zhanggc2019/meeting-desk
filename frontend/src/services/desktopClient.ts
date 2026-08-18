@@ -1,7 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type {
   BrowserFileDescriptor,
   ExportResult,
+  ExportMeetingRequest,
   ImportMode,
   ImportCandidate,
   MeetingDetail,
@@ -35,6 +36,7 @@ export const DESKTOP_COMMANDS = {
   playMeetingMedia: "play_meeting_media",
   deleteMeeting: "delete_meeting",
   exportMeetingMarkdown: "export_meeting_markdown",
+  exportMeetingDocument: "export_meeting_document_command",
   listMinutesTemplates: "list_minutes_templates",
   getPublicSettings: "get_public_settings",
   selectLocalModelDirectory: "select_local_model_directory",
@@ -73,12 +75,14 @@ export interface DesktopClient {
   getMeetingDetail(meetingId: string): Promise<MeetingDetail>;
   /** 返回与导出文件一致的 Markdown 文本，仅用于本地预览。 */
   getMeetingMarkdownPreview(meetingId: string): Promise<string>;
-  /** 使用 Windows 默认播放器试听原始媒体，必要时引导重新关联文件。 */
+  /** 授权应用内播放器读取原始媒体，必要时引导重新关联文件。 */
   playMeetingMedia(meetingId: string): Promise<PlaybackResult>;
   /** 删除本地会议、逐字稿、纪要及关联任务，不接触用户原始文件。 */
   deleteMeeting(meetingId: string): Promise<boolean>;
   /** 使用桌面保存对话框导出 Markdown。 */
   exportMeetingMarkdown(meetingId: string): Promise<ExportResult>;
+  /** 使用桌面保存对话框导出可组合内容的 Word 或 PDF。 */
+  exportMeetingDocument(meetingId: string, request: ExportMeetingRequest): Promise<ExportResult>;
   /** 读取绝不包含密钥值的公开设置。 */
   getPublicSettings(): Promise<PublicSettings>;
   /** 选择并校验一个本机 SenseVoiceSmall 模型目录。 */
@@ -158,13 +162,24 @@ export function createTauriDesktopClient(): DesktopClient {
       return invoke<string>(DESKTOP_COMMANDS.getMeetingMarkdownPreview, { meetingId });
     },
     async playMeetingMedia(meetingId) {
-      return invoke<PlaybackResult>(DESKTOP_COMMANDS.playMeetingMedia, { meetingId });
+      const result = await invoke<Omit<PlaybackResult, "sourceUrl"> & { sourcePath?: string }>(
+        DESKTOP_COMMANDS.playMeetingMedia,
+        { meetingId },
+      );
+      return {
+        status: result.status,
+        reboundSource: result.reboundSource,
+        sourceUrl: result.sourcePath ? convertFileSrc(result.sourcePath) : undefined,
+      };
     },
     async deleteMeeting(meetingId) {
       return invoke<boolean>(DESKTOP_COMMANDS.deleteMeeting, { meetingId });
     },
     async exportMeetingMarkdown(meetingId) {
       return invoke<ExportResult>(DESKTOP_COMMANDS.exportMeetingMarkdown, { meetingId });
+    },
+    async exportMeetingDocument(meetingId, request) {
+      return invoke<ExportResult>(DESKTOP_COMMANDS.exportMeetingDocument, { meetingId, request });
     },
     async getPublicSettings() {
       return invoke<PublicSettings>(DESKTOP_COMMANDS.getPublicSettings);

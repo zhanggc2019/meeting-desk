@@ -4,12 +4,13 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::app_state::AppState;
 use crate::commands::CommandError;
 use crate::domain::{MeetingDetail, TaskRecord, TaskStatus};
+use crate::meeting_export::{export_meeting_document, ExportContent, ExportFormat};
 use crate::minutes::{render_minutes_markdown, MeetingMinutes};
 use crate::storage::MeetingRepository;
 
@@ -71,12 +72,20 @@ pub struct MinutesTemplateResponse {
     pub description: &'static str,
 }
 
-/// 表示 Markdown 导出是否完成或由用户取消。
+/// 表示文档导出是否完成或由用户取消。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportResult {
     pub status: &'static str,
     pub display_name: Option<String>,
+}
+
+/// 表示前端提交的导出格式与内容组合。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportMeetingRequest {
+    pub format: ExportFormat,
+    pub contents: Vec<ExportContent>,
 }
 
 /// 表示一次本地媒体试听请求的结果。
@@ -85,6 +94,7 @@ pub struct ExportResult {
 pub struct PlaybackResult {
     pub status: &'static str,
     pub rebound_source: bool,
+    pub source_path: Option<String>,
 }
 
 /// 在本地历史中搜索标题、摘要和完整逐字稿。
@@ -290,7 +300,7 @@ pub fn get_meeting_detail(
     Ok(response)
 }
 
-/// 使用 Windows 默认播放器试听原始媒体；旧记录缺少路径时引导用户重新关联。
+/// 授权应用内播放器读取原始媒体；旧记录缺少路径时引导用户重新关联。
 #[tauri::command]
 pub fn play_meeting_media(
     app: AppHandle,
@@ -325,6 +335,7 @@ pub fn play_meeting_media(
             return Ok(PlaybackResult {
                 status: "cancelled",
                 rebound_source: false,
+                source_path: None,
             });
         };
         validate_playback_media(&path)?;
@@ -333,16 +344,26 @@ pub fn play_meeting_media(
             .set_meeting_source_path(&meeting_id, &path.to_string_lossy())?;
         (path, true)
     };
-    open_with_system_player(&media_path)?;
+    validate_playback_media(&media_path)?;
+    app.asset_protocol_scope()
+        .allow_file(&media_path)
+        .map_err(|_| {
+            CommandError::new(
+                "playback_authorization_failed",
+                "无法读取原始媒体文件",
+                true,
+            )
+        })?;
     log::info!(
         target: "app.meetings",
-        "meeting_playback_opened meeting_id={} rebound_source={}",
+        "meeting_playback_ready meeting_id={} rebound_source={}",
         meeting_id,
         rebound_source,
     );
     Ok(PlaybackResult {
-        status: "opened",
+        status: "ready",
         rebound_source,
+        source_path: Some(media_path.to_string_lossy().into_owned()),
     })
 }
 
@@ -372,50 +393,6 @@ fn validate_playback_media(path: &Path) -> Result<(), CommandError> {
         ));
     }
     Ok(())
-}
-
-/// 通过 Windows Shell 直接调用默认关联播放器，不创建终端窗口。
-#[cfg(target_os = "windows")]
-fn open_with_system_player(path: &Path) -> Result<(), CommandError> {
-    use std::iter::once;
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    let operation = "open".encode_utf16().chain(once(0)).collect::<Vec<_>>();
-    let media_path = path
-        .as_os_str()
-        .encode_wide()
-        .chain(once(0))
-        .collect::<Vec<_>>();
-    let result = unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            operation.as_ptr(),
-            media_path.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    if result as isize <= 32 {
-        return Err(CommandError::new(
-            "playback_open_failed",
-            "无法打开系统播放器，请检查该格式的默认应用",
-            false,
-        ));
-    }
-    Ok(())
-}
-
-/// 为非 Windows 开发环境提供明确错误；正式目标仅支持 Windows 11。
-#[cfg(not(target_os = "windows"))]
-fn open_with_system_player(_path: &Path) -> Result<(), CommandError> {
-    Err(CommandError::new(
-        "playback_platform_unsupported",
-        "当前系统不支持本地媒体试听",
-        false,
-    ))
 }
 
 /// 从恢复任务所需的现有生命周期快照即时计算指定会议的总处理耗时。
@@ -559,6 +536,76 @@ pub async fn export_meeting_markdown(
     })
 }
 
+/// 让用户选择目标位置，并按请求组合导出 Word 或 PDF 文档。
+#[tauri::command]
+pub async fn export_meeting_document_command(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    meeting_id: String,
+    request: ExportMeetingRequest,
+) -> Result<ExportResult, CommandError> {
+    let operation_started = Instant::now();
+    if request.contents.is_empty() {
+        return Err(CommandError::new(
+            "export_contents_empty",
+            "请至少选择一项导出内容",
+            false,
+        ));
+    }
+    let detail = state
+        .repository
+        .get_meeting(&meeting_id)?
+        .ok_or_else(|| CommandError::new("meeting_not_found", "未找到该会议记录", false))?;
+    let minutes: MeetingMinutes = serde_json::from_value(detail.minutes)
+        .map_err(|_| CommandError::new("minutes_invalid", "会议纪要格式无效", false))?;
+    let extension = request.format.extension();
+    let display_name = format!("{}.{}", safe_file_stem(minutes.title.as_deref()), extension);
+    let format_label = match request.format {
+        ExportFormat::Docx => "Word 文档",
+        ExportFormat::Pdf => "PDF 文档",
+    };
+    let selected = app
+        .dialog()
+        .file()
+        .add_filter(format_label, &[extension])
+        .set_file_name(&display_name)
+        .blocking_save_file();
+    let Some(path) = selected.and_then(|value| value.into_path().ok()) else {
+        log::info!(
+            target: "app.meetings",
+            "meeting_document_export_cancelled meeting_id={} format={} elapsed_ms={}",
+            meeting_id,
+            extension,
+            operation_started.elapsed().as_millis(),
+        );
+        return Ok(ExportResult {
+            status: "cancelled",
+            display_name: None,
+        });
+    };
+    ensure_export_extension(&path, request.format)?;
+    let content_count = request.contents.len();
+    let contents = request.contents;
+    let transcript = normalize_transcript(&detail.transcript, detail.transcript_segments);
+    tauri::async_runtime::spawn_blocking(move || {
+        export_meeting_document(&path, request.format, &contents, &minutes, &transcript)
+    })
+    .await
+    .map_err(|_| CommandError::new("export_failed", "文档导出未完成", true))??;
+    log::info!(
+        target: "app.meetings",
+        "meeting_document_export_completed meeting_id={} format={} content_count={} elapsed_ms={}",
+        meeting_id,
+        extension,
+        content_count,
+        operation_started.elapsed().as_millis(),
+    );
+    Ok(ExportResult {
+        status: "exported",
+        display_name: Some(display_name),
+    })
+}
+
 /// Writes and flushes in the destination directory before atomically replacing the target.
 fn write_markdown_atomically(path: &Path, markdown: &str) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
@@ -650,6 +697,23 @@ fn ensure_markdown_extension(path: &Path) -> Result<(), CommandError> {
         Err(CommandError::new(
             "export_extension_invalid",
             "导出文件必须使用 .md 扩展名",
+            false,
+        ))
+    }
+}
+
+/// 校验用户保存路径与所选文档格式一致。
+fn ensure_export_extension(path: &Path, format: ExportFormat) -> Result<(), CommandError> {
+    if path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case(format.extension()))
+    {
+        Ok(())
+    } else {
+        Err(CommandError::new(
+            "export_extension_invalid",
+            format!("导出文件必须使用 .{} 扩展名", format.extension()),
             false,
         ))
     }

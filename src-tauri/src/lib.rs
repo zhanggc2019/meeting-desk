@@ -4,6 +4,7 @@ pub mod commands;
 pub mod config;
 pub mod domain;
 pub mod ingest;
+pub mod meeting_export;
 pub mod minutes;
 pub mod providers;
 pub mod secrets;
@@ -102,6 +103,7 @@ pub fn run() {
             commands::meetings::play_meeting_media,
             commands::meetings::delete_meeting,
             commands::meetings::export_meeting_markdown,
+            commands::meetings::export_meeting_document_command,
             commands::meetings::list_minutes_templates,
             commands::settings::get_public_settings,
             commands::settings::select_local_model_directory,

@@ -21,6 +21,7 @@ import remarkGfm from "remark-gfm";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import type {
   ContentType,
+  ExportMeetingRequest,
   MeetingDetail,
   MeetingMinutes,
   SupportedStatement,
@@ -31,6 +32,8 @@ import { useDesktopClient } from "../../services/DesktopClientContext";
 import { getSafeErrorMessage } from "../../services/desktopClient";
 import { useAppStore } from "../../stores/appStore";
 import { formatDateTime, formatDuration, formatTimestamp } from "../../utils/format";
+import { MeetingAudioPlayer } from "./MeetingAudioPlayer";
+import { MeetingExportDialog } from "./MeetingExportDialog";
 
 type DetailTab = "transcript" | "minutes" | "chapters";
 const TRANSCRIPT_PARAGRAPH_TARGET = 180;
@@ -138,6 +141,9 @@ export function MeetingDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [openingPlayback, setOpeningPlayback] = useState(false);
+  const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     if (!recordId) {
@@ -148,6 +154,8 @@ export function MeetingDetailPage() {
     setLoading(true);
     setMarkdownPreview(null);
     setPreviewOpen(false);
+    setPlaybackUrl(null);
+    setExportOpen(false);
     setTab("minutes");
     setTranscriptQuery("");
     client.getMeetingDetail(recordId)
@@ -199,26 +207,35 @@ export function MeetingDetailPage() {
     }
   }
 
-  /** 通过桌面后端导出 UTF-8 Markdown。 */
-  async function handleExport() {
-    if (!recordId) return;
+  /** 通过桌面后端按用户选择生成 Word 或 PDF。 */
+  async function handleExport(request: ExportMeetingRequest): Promise<boolean> {
+    if (!recordId || exporting) return false;
+    setExporting(true);
+    setError(null);
     try {
-      const result = await client.exportMeetingMarkdown(recordId);
-      if (result.status === "exported") setNotice("Markdown 已导出");
+      const result = await client.exportMeetingDocument(recordId, request);
+      if (result.status === "exported") {
+        setNotice(`${request.format === "docx" ? "Word" : "PDF"} 文档已导出`);
+        return true;
+      }
     } catch (reason) {
       setError(getSafeErrorMessage(reason));
+    } finally {
+      setExporting(false);
     }
+    return false;
   }
 
-  /** 使用系统播放器试听当前记录关联的原始媒体。 */
+  /** 请求原始媒体访问地址并在当前详情页内开始播放。 */
   async function handlePlayback() {
     if (!recordId || openingPlayback) return;
     setOpeningPlayback(true);
     setError(null);
     try {
       const result = await client.playMeetingMedia(recordId);
-      if (result.status === "opened") {
-        setNotice(result.reboundSource ? "已关联原文件，并使用系统播放器打开" : "已使用系统播放器打开");
+      if (result.status === "ready" && result.sourceUrl) {
+        setPlaybackUrl(result.sourceUrl);
+        setNotice(result.reboundSource ? "已关联原文件，正在应用内播放" : "正在应用内播放");
       }
     } catch (reason) {
       setError(getSafeErrorMessage(reason));
@@ -294,7 +311,7 @@ export function MeetingDetailPage() {
           <button className="button quiet" type="button" disabled={openingPlayback} onClick={() => void handlePlayback()}><CirclePlay size={17} aria-hidden="true" />{openingPlayback ? "正在打开" : "试听"}</button>
           <button className="button quiet" type="button" onClick={() => setPreviewOpen(true)}><Eye size={16} aria-hidden="true" />文档预览</button>
           <button className="button secondary" type="button" disabled={!minutes.summary} onClick={() => void handleCopy(minutes.summary, "AI 摘要")}><Clipboard size={16} aria-hidden="true" />复制摘要</button>
-          <button className="button primary" type="button" onClick={() => void handleExport()}><Download size={16} aria-hidden="true" />导出</button>
+          <button className="button primary" type="button" onClick={() => setExportOpen(true)}><Download size={16} aria-hidden="true" />导出</button>
           <button className="icon-button delete-icon-action" type="button" aria-label="删除录音记录" title="删除录音记录" onClick={() => setDeleteOpen(true)}><Trash2 size={17} aria-hidden="true" /></button>
         </div>
       </div>
@@ -315,6 +332,8 @@ export function MeetingDetailPage() {
         <div className="recording-duration"><strong>{formatDuration(detail.durationMs)}</strong><span>{transcript.language ?? "语言未标注"}</span></div>
       </section>
 
+      {playbackUrl ? <MeetingAudioPlayer sourceUrl={playbackUrl} title={detail.sourceName} onClose={() => setPlaybackUrl(null)} onPlaybackError={() => setError("当前媒体格式无法在应用内播放，请转换为 MP3 或 WAV 后重试")} /> : null}
+
       <ConfirmDialog
         open={deleteOpen}
         title="删除录音记录？"
@@ -323,6 +342,14 @@ export function MeetingDetailPage() {
         busy={deleting}
         onCancel={() => setDeleteOpen(false)}
         onConfirm={() => void handleDelete()}
+      />
+
+      <MeetingExportDialog
+        open={exportOpen}
+        title={minutes.title ?? "未命名录音"}
+        busy={exporting}
+        onClose={() => setExportOpen(false)}
+        onExport={handleExport}
       />
 
       {notice ? <div className="toast" role="status">{notice}<button type="button" aria-label="关闭提示" onClick={() => setNotice(null)}>×</button></div> : null}
@@ -398,7 +425,7 @@ export function MeetingDetailPage() {
         <div className="document-preview-layer" role="dialog" aria-modal="true" aria-label="Markdown 文档预览">
           <button className="document-preview-backdrop" type="button" aria-label="关闭文档预览" onClick={() => setPreviewOpen(false)} />
           <section className="document-preview-window">
-            <div className="preview-toolbar"><div><span className="eyebrow">导出预览</span><h2>Markdown 文档</h2><p>预览内容与导出的文档一致</p></div><div className="header-actions"><button className="button secondary" type="button" onClick={() => void handleExport()}><Download size={16} aria-hidden="true" />导出</button><button className="icon-button" type="button" aria-label="关闭文档预览" onClick={() => setPreviewOpen(false)}><X size={17} /></button></div></div>
+            <div className="preview-toolbar"><div><span className="eyebrow">内容预览</span><h2>纪要与逐字稿</h2><p>用于核对即将导出的本地内容</p></div><div className="header-actions"><button className="button secondary" type="button" onClick={() => setExportOpen(true)}><Download size={16} aria-hidden="true" />导出</button><button className="icon-button" type="button" aria-label="关闭文档预览" onClick={() => setPreviewOpen(false)}><X size={17} /></button></div></div>
             <div className="document-preview-scroll">{previewLoading ? <div className="preview-loading">正在生成预览…</div> : null}{!previewLoading && markdownPreview !== null ? <article className="markdown-paper"><ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>{markdownPreview}</ReactMarkdown></article> : null}</div>
           </section>
         </div>

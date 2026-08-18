@@ -448,7 +448,7 @@ export function createMockDesktopClient(): DesktopClient {
       if (meetingDeleted || meetingId !== meeting.id) {
         throw new Error("无法试听：录音记录不存在");
       }
-      return { status: "opened", reboundSource: false };
+      return { status: "ready", reboundSource: false, sourceUrl: "/mock-recording.mp3" };
     },
     async deleteMeeting(meetingId) {
       if (meetingDeleted || meetingId !== meeting.id) return false;
@@ -461,6 +461,13 @@ export function createMockDesktopClient(): DesktopClient {
         throw new Error("无法导出：会议记录不存在");
       }
       return { status: "exported", displayName: "产品交付节奏讨论.md" };
+    },
+    async exportMeetingDocument(meetingId, request) {
+      if (meetingDeleted || meetingId !== meeting.id) {
+        throw new Error("无法导出：会议记录不存在");
+      }
+      const extension = request.format;
+      return { status: "exported", displayName: `产品交付节奏讨论.${extension}` };
     },
     async getPublicSettings() {
       return structuredClone(settings);
